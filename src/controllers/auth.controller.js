@@ -63,8 +63,21 @@ const getProfileByUserId = async (req, res) => {
   }
 };
 
+const logout = async (req, res) => {
+  try {
+    const fcmToken = req.body?.fcmToken ?? null;
+    const result = await authService.logout(req.user.id, fcmToken);
+    return successResponse(res, result, 'Logout successful');
+  } catch (error) {
+    console.error('Logout error:', error);
+    const statusCode = error.message === 'User not found' ? 404 : 500;
+    return errorResponse(res, error.message || 'Logout failed', statusCode);
+  }
+};
+
 module.exports = {
   signUp,
   login,
+  logout,
   getProfileByUserId
 };

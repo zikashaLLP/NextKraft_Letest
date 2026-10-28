@@ -1,8 +1,27 @@
 const admin = require('firebase-admin');
 const config = require('../config/config');
-const { User } = require('../models/associations');
+const { User, Notification } = require('../models/associations');
+const {
+  parseFcmTokens,
+  removeFcmToken,
+  serializeFcmTokens
+} = require('../utils/fcmTokens');
 
-// Initialize Firebase Admin SDK
+const NOTIFICATION_TYPES = {
+  PARKING_REQUEST_CREATED: 'parking_request_created',
+  CAR_RELEASE_REQUEST: 'car_release_request',
+  PARKING_REQUEST_ACCEPTED: 'parking_request_accepted',
+  PARKING_REQUEST_REJECTED: 'parking_request_rejected',
+  REQUEST_ACCEPTED: 'request_accepted',
+  REQUEST_REJECTED: 'request_rejected',
+  CAR_PARKED: 'car_parked',
+  CAR_RELEASED: 'car_released',
+  PALLET_ASSIGNED: 'pallet_assigned',
+  PARKING_REQUEST_STATUS_UPDATE: 'parking_request_status_update',
+  REQUEST_STATUS_UPDATE: 'request_status_update',
+  GENERAL: 'general'
+};
+
 let firebaseInitialized = false;
 
 const initializeFirebase = () => {
@@ -12,13 +31,11 @@ const initializeFirebase = () => {
 
   try {
     if (config.fcm.serviceAccountKey) {
-      // If service account key is provided as JSON string
       const serviceAccount = JSON.parse(config.fcm.serviceAccountKey);
       admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
       });
     } else if (config.fcm.serviceAccountPath) {
-      // If service account key is provided as file path
       admin.initializeApp({
         credential: admin.credential.cert(config.fcm.serviceAccountPath)
       });
@@ -33,140 +50,304 @@ const initializeFirebase = () => {
   }
 };
 
-// Initialize Firebase on module load
 initializeFirebase();
 
-/**
- * Send push notification to a user by userId
- * @param {number} userId - User ID to send notification to
- * @param {string} title - Notification title
- * @param {string} body - Notification body
- * @param {object} data - Additional data payload (optional)
- * @returns {Promise<boolean>} - Returns true if notification sent successfully
- */
-const sendNotificationToUser = async (userId, title, body, data = {}) => {
-  try {
-    if (!firebaseInitialized) {
-      console.warn('Firebase not initialized. Skipping notification.');
-      return false;
+const toStringData = (data = {}) => {
+  const out = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (value === null || value === undefined) {
+      out[key] = '';
+    } else if (typeof value === 'object') {
+      out[key] = JSON.stringify(value);
+    } else {
+      out[key] = String(value);
     }
+  }
+  return out;
+};
 
-    // Get user's FCM token
+const pruneInvalidToken = async (userId, token) => {
+  try {
+    const user = await User.findByPk(userId, { attributes: ['Id', 'FcmToken'] });
+    if (!user) return;
+    const next = removeFcmToken(user.FcmToken, token);
+    await user.update({ FcmToken: serializeFcmTokens(next) });
+    console.log(`Removed invalid FCM token for user ${userId}`);
+  } catch (error) {
+    console.error(`Error removing invalid FCM token for user ${userId}:`, error);
+  }
+};
+
+const isInvalidTokenError = (error) =>
+  error?.code === 'messaging/invalid-registration-token' ||
+  error?.code === 'messaging/registration-token-not-registered';
+
+/**
+ * Persist inbox row + push FCM to all user tokens.
+ * Single send path for all business notifications.
+ */
+const sendToUser = async ({ userId, title, body, type = NOTIFICATION_TYPES.GENERAL, data = {} }) => {
+  try {
     const user = await User.findByPk(userId, {
       attributes: ['Id', 'FcmToken', 'Username']
     });
 
-    if (!user || !user.FcmToken) {
-      console.log(`User ${userId} does not have an FCM token. Skipping notification.`);
-      return false;
+    if (!user) {
+      console.log(`User ${userId} not found. Skipping notification.`);
+      return { success: false, notificationId: null };
     }
 
-    // Convert all data values to strings (required by FCM)
-    // React Native apps receive data payload which can be used for navigation
-    const dataPayload = {};
-    for (const [key, value] of Object.entries(data)) {
-      dataPayload[key] = value !== null && value !== undefined ? String(value) : '';
+    const dataPayload = toStringData({
+      ...data,
+      type,
+      notificationType: type
+    });
+
+    const row = await Notification.create({
+      UserId: userId,
+      Type: type,
+      Title: title,
+      Body: body,
+      DataJson: JSON.stringify(dataPayload),
+      IsRead: false
+    });
+
+    dataPayload.notificationId = String(row.Id);
+    dataPayload.timestamp = new Date().toISOString();
+
+    const tokens = parseFcmTokens(user.FcmToken);
+    if (!tokens.length) {
+      console.log(`User ${userId} has no FCM tokens. Inbox saved, push skipped.`);
+      return { success: true, notificationId: row.Id, pushed: 0 };
     }
 
-    // Add React Native specific metadata
-    const enhancedData = {
-      ...dataPayload,
-      notificationType: dataPayload.type || 'general',
-      timestamp: new Date().toISOString()
-    };
+    if (!firebaseInitialized) {
+      console.warn('Firebase not initialized. Inbox saved, push skipped.');
+      return { success: true, notificationId: row.Id, pushed: 0 };
+    }
 
     const message = {
-      // Notification payload (for apps in foreground/background)
-      notification: {
-        title: title,
-        body: body
-      },
-      // Data payload (always delivered, used for app logic/navigation)
-      data: enhancedData,
-      token: user.FcmToken,
-      // Android-specific configuration (OPTIONAL but recommended)
-      // Without this, FCM uses defaults which may not be optimal
+      notification: { title, body },
+      data: dataPayload,
       android: {
-        priority: 'high', // Ensures immediate delivery (default is 'normal')
+        priority: 'high',
         notification: {
           sound: 'default',
-          channelId: 'default', // Required for Android 8.0+ (matches your React Native app's channel)
-          tag: 'notification',
-          icon: 'ic_notification', // Custom icon (optional)
-          color: '#FF5722', // Notification color (optional)
-          clickAction: 'OPEN_NOTIFICATION' // For React Native notification handling
+          channelId: 'nextkraft_alerts',
+          tag: type,
+          clickAction: 'OPEN_NOTIFICATION'
         }
       },
-      // iOS-specific configuration (OPTIONAL but recommended)
-      // Without this, FCM uses defaults which may not handle background notifications properly
       apns: {
-        headers: {
-          'apns-priority': '10' // High priority for immediate delivery (default is '5')
-        },
+        headers: { 'apns-priority': '10' },
         payload: {
           aps: {
-            // Note: alert is optional here since we have notification.title/body above
-            // But including it ensures proper iOS handling
             sound: 'default',
             badge: 1,
-            'content-available': 1 // Critical for React Native background notifications
+            'content-available': 1
           },
-          // Custom data for React Native (must be in payload, not just aps)
-          ...enhancedData
+          ...dataPayload
         }
-      }
+      },
+      tokens
     };
 
-    const response = await admin.messaging().send(message);
-    console.log(`Notification sent successfully to user ${userId}:`, response);
-    return true;
+    const response = await admin.messaging().sendEachForMulticast(message);
+    console.log(
+      `Notification ${row.Id} to user ${userId}: success=${response.successCount} failure=${response.failureCount}`
+    );
+
+    if (response.responses) {
+      await Promise.all(
+        response.responses.map(async (res, index) => {
+          if (res.success) return;
+          if (isInvalidTokenError(res.error)) {
+            await pruneInvalidToken(userId, tokens[index]);
+          } else {
+            console.error(`FCM send failure for user ${userId}:`, res.error?.message || res.error);
+          }
+        })
+      );
+    }
+
+    return {
+      success: response.successCount > 0 || tokens.length === 0,
+      notificationId: row.Id,
+      pushed: response.successCount
+    };
   } catch (error) {
     console.error(`Error sending notification to user ${userId}:`, error);
-    
-    // If token is invalid, remove it from database
-    if (error.code === 'messaging/invalid-registration-token' || 
-        error.code === 'messaging/registration-token-not-registered') {
-      try {
-        await User.update(
-          { FcmToken: null },
-          { where: { Id: userId } }
-        );
-        console.log(`Removed invalid FCM token for user ${userId}`);
-      } catch (updateError) {
-        console.error(`Error removing invalid FCM token for user ${userId}:`, updateError);
-      }
-    }
-    
-    return false;
+    return { success: false, notificationId: null };
   }
 };
 
-/**
- * Send push notification to multiple users
- * @param {Array<number>} userIds - Array of user IDs
- * @param {string} title - Notification title
- * @param {string} body - Notification body
- * @param {object} data - Additional data payload (optional)
- * @returns {Promise<number>} - Returns number of successful notifications
- */
-const sendNotificationToUsers = async (userIds, title, body, data = {}) => {
-  if (!Array.isArray(userIds) || userIds.length === 0) {
-    return 0;
-  }
+/** @deprecated Prefer sendToUser / typed helpers */
+const sendNotificationToUser = async (userId, title, body, data = {}) => {
+  const type = data.type || data.notificationType || NOTIFICATION_TYPES.GENERAL;
+  const { ...rest } = data;
+  const result = await sendToUser({ userId, title, body, type, data: rest });
+  return !!result.success;
+};
 
+const sendNotificationToUsers = async (userIds, title, body, data = {}) => {
+  if (!Array.isArray(userIds) || userIds.length === 0) return 0;
   let successCount = 0;
   for (const userId of userIds) {
-    const success = await sendNotificationToUser(userId, title, body, data);
-    if (success) {
-      successCount++;
-    }
+    const ok = await sendNotificationToUser(userId, title, body, data);
+    if (ok) successCount += 1;
   }
   return successCount;
 };
 
-module.exports = {
-  sendNotificationToUser,
-  sendNotificationToUsers,
-  initializeFirebase
+const notifyParkingRequestCreated = (userId, payload) =>
+  sendToUser({
+    userId,
+    title: 'New Parking Request',
+    body: payload.body,
+    type: NOTIFICATION_TYPES.PARKING_REQUEST_CREATED,
+    data: payload.data || {}
+  });
+
+const notifyCarReleaseRequest = (userId, payload) =>
+  sendToUser({
+    userId,
+    title: 'New Car Release Request',
+    body: payload.body,
+    type: NOTIFICATION_TYPES.CAR_RELEASE_REQUEST,
+    data: payload.data || {}
+  });
+
+const notifyParkingRequestAccepted = (userId, payload) =>
+  sendToUser({
+    userId,
+    title: 'Parking Request Accepted',
+    body: payload.body,
+    type: NOTIFICATION_TYPES.PARKING_REQUEST_ACCEPTED,
+    data: payload.data || {}
+  });
+
+const notifyParkingRequestRejected = (userId, payload) =>
+  sendToUser({
+    userId,
+    title: 'Parking Request Rejected',
+    body: payload.body,
+    type: NOTIFICATION_TYPES.PARKING_REQUEST_REJECTED,
+    data: payload.data || {}
+  });
+
+const notifyReleaseRequestAccepted = (userId, payload) =>
+  sendToUser({
+    userId,
+    title: 'Release Request Accepted',
+    body: payload.body,
+    type: NOTIFICATION_TYPES.REQUEST_ACCEPTED,
+    data: payload.data || {}
+  });
+
+const notifyReleaseRequestRejected = (userId, payload) =>
+  sendToUser({
+    userId,
+    title: 'Release Request Rejected',
+    body: payload.body,
+    type: NOTIFICATION_TYPES.REQUEST_REJECTED,
+    data: payload.data || {}
+  });
+
+const notifyCarParked = (userId, payload) =>
+  sendToUser({
+    userId,
+    title: 'Car Parked',
+    body: payload.body,
+    type: NOTIFICATION_TYPES.CAR_PARKED,
+    data: payload.data || {}
+  });
+
+const notifyCarReleased = (userId, payload) =>
+  sendToUser({
+    userId,
+    title: 'Car Released',
+    body: payload.body,
+    type: NOTIFICATION_TYPES.CAR_RELEASED,
+    data: payload.data || {}
+  });
+
+const listNotificationsForUser = async (userId, { limit = 50, offset = 0 } = {}) => {
+  const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 100);
+  const safeOffset = Math.max(parseInt(offset, 10) || 0, 0);
+
+  const { rows, count } = await Notification.findAndCountAll({
+    where: { UserId: userId },
+    order: [['CreatedAt', 'DESC']],
+    limit: safeLimit,
+    offset: safeOffset
+  });
+
+  const unreadCount = await Notification.count({
+    where: { UserId: userId, IsRead: false }
+  });
+
+  return {
+    notifications: rows.map((n) => {
+      let data = {};
+      try {
+        data = n.DataJson ? JSON.parse(n.DataJson) : {};
+      } catch {
+        data = {};
+      }
+      return {
+        id: n.Id,
+        type: n.Type,
+        title: n.Title,
+        body: n.Body,
+        data,
+        isRead: !!n.IsRead,
+        createdAt: n.CreatedAt,
+        updatedAt: n.UpdatedAt
+      };
+    }),
+    total: count,
+    unreadCount,
+    limit: safeLimit,
+    offset: safeOffset
+  };
 };
 
+const markNotificationRead = async (userId, notificationId) => {
+  const row = await Notification.findOne({
+    where: { Id: notificationId, UserId: userId }
+  });
+  if (!row) {
+    throw new Error('Notification not found');
+  }
+  if (!row.IsRead) {
+    await row.update({ IsRead: true });
+  }
+  return { id: row.Id, isRead: true };
+};
+
+const markAllNotificationsRead = async (userId) => {
+  const [updated] = await Notification.update(
+    { IsRead: true },
+    { where: { UserId: userId, IsRead: false } }
+  );
+  return { updated };
+};
+
+module.exports = {
+  NOTIFICATION_TYPES,
+  initializeFirebase,
+  sendToUser,
+  sendNotificationToUser,
+  sendNotificationToUsers,
+  notifyParkingRequestCreated,
+  notifyCarReleaseRequest,
+  notifyParkingRequestAccepted,
+  notifyParkingRequestRejected,
+  notifyReleaseRequestAccepted,
+  notifyReleaseRequestRejected,
+  notifyCarParked,
+  notifyCarReleased,
+  listNotificationsForUser,
+  markNotificationRead,
+  markAllNotificationsRead
+};

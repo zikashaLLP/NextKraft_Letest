@@ -1,5 +1,10 @@
 const { User, Customer, Operator } = require('../models/associations');
 const { generateToken } = require('../utils');
+const {
+  addFcmToken,
+  removeFcmToken,
+  serializeFcmTokens
+} = require('../utils/fcmTokens');
 const customerService = require('./customer.service');
 const operatorService = require('./operator.service');
 
@@ -54,9 +59,10 @@ const login = async (username, password, fcmToken = null) => {
     throw new Error('Invalid username or password');
   }
 
-  // Update FCM token if provided
+  // Append device FCM token (multi-device array; do not overwrite other devices)
   if (fcmToken) {
-    await user.update({ FcmToken: fcmToken });
+    const tokens = addFcmToken(user.FcmToken, fcmToken);
+    await user.update({ FcmToken: serializeFcmTokens(tokens) });
   }
 
   // Generate JWT token with userId and role in payload
@@ -72,6 +78,21 @@ const login = async (username, password, fcmToken = null) => {
     },
     token // JWT token contains { userId: user.Id, role: user.Role }
   };
+};
+
+/**
+ * Logout — remove this device's FCM token from the user's array (other devices keep theirs).
+ */
+const logout = async (userId, fcmToken = null) => {
+  const user = await User.findByPk(userId, { attributes: ['Id', 'FcmToken'] });
+  if (!user) {
+    throw new Error('User not found');
+  }
+  if (fcmToken) {
+    const tokens = removeFcmToken(user.FcmToken, fcmToken);
+    await user.update({ FcmToken: serializeFcmTokens(tokens) });
+  }
+  return { success: true };
 };
 
 /**
@@ -135,6 +156,7 @@ const getProfileByUserId = async (targetUserId, requester) => {
 module.exports = {
   signUp,
   login,
+  logout,
   getProfileByUserId
 };
 

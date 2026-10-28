@@ -1032,17 +1032,14 @@ const requestCarRelease = async (userId, palletId) => {
     const customerName = customer ? customer.Username : 'A customer';
     const carInfo = pallet.car ? `${pallet.car.CarCompany} ${pallet.car.CarModel} (${pallet.car.CarNumber})` : 'their car';
     
-    await notificationService.sendNotificationToUser(
-      operator.user.Id,
-      'New Car Release Request',
-      `${customerName} has requested to release ${carInfo} from pallet ${pallet.UserGivenPalletNumber || `Level ${pallet.Level}, Column ${pallet.Column}`}`,
-      {
-        type: 'car_release_request',
+    await notificationService.notifyCarReleaseRequest(operator.user.Id, {
+      body: `${customerName} has requested to release ${carInfo} from pallet ${pallet.UserGivenPalletNumber || `Level ${pallet.Level}, Column ${pallet.Column}`}`,
+      data: {
         requestId: request.Id.toString(),
         userId: userId.toString(),
         palletId: palletId.toString()
       }
-    );
+    });
 
     // Emit WebSocket event to operator
     await websocketService.emitToUser(operator.user.Id, 'car_release_request', {

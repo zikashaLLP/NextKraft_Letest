@@ -11,6 +11,7 @@ const ParkingRequest = require('./ParkingRequest');
 const ErrorLog = require('./ErrorLog');
 const SystemLog = require('./SystemLog');
 const CarAllotSyncLedger = require('./CarAllotSyncLedger');
+const Notification = require('./Notification');
 
 // User associations
 User.hasMany(Customer, { foreignKey: 'UserId', as: 'customers' });
@@ -18,8 +19,10 @@ User.hasMany(Car, { foreignKey: 'UserId', as: 'cars' });
 User.hasMany(Operator, { foreignKey: 'UserId', as: 'operators' });
 User.hasMany(RequestQueue, { foreignKey: 'UserId', as: 'requestQueues' });
 User.hasMany(Request, { foreignKey: 'UserId', as: 'requests' });
+User.hasMany(Notification, { foreignKey: 'UserId', as: 'notifications' });
 User.hasMany(Customer, { foreignKey: 'ApprovedBy', as: 'approvedCustomers' });
 User.hasMany(Operator, { foreignKey: 'ApprovedBy', as: 'approvedOperators' });
+Notification.belongsTo(User, { foreignKey: 'UserId', as: 'user' });
 
 // Project associations
 Project.hasMany(Customer, { foreignKey: 'ProjectId', as: 'customers' });
@@ -100,6 +103,7 @@ module.exports = {
   ParkingRequest,
   ErrorLog,
   SystemLog,
-  CarAllotSyncLedger
+  CarAllotSyncLedger,
+  Notification
 };
 

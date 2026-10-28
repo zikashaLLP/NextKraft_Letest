@@ -118,17 +118,14 @@ const createParkingRequest = async (userId, carId) => {
     const carInfo = parkingRequest.car
       ? `${parkingRequest.car.CarCompany} ${parkingRequest.car.CarModel} (${parkingRequest.car.CarNumber})`
       : 'a car';
-    await notificationService.sendNotificationToUser(
-      operator.user.Id,
-      'New Parking Request',
-      `New parking request for ${carInfo}`,
-      {
-        type: 'parking_request_created',
+    await notificationService.notifyParkingRequestCreated(operator.user.Id, {
+      body: `New parking request for ${carInfo}`,
+      data: {
         parkingRequestId: parkingRequest.Id.toString(),
         userId: userId.toString(),
         carId: parkingRequest.CarId.toString()
       }
-    );
+    });
 
     // Emit WebSocket event for real-time update to operator
     websocketService.emitToUser(operator.user.Id, 'new_parking_request', {
@@ -293,17 +290,30 @@ const updateParkingRequestStatus = async (operatorUserId, parkingRequestId, newS
     UpdatedAt: istTime
   });
 
-  // Notify customer
-  await notificationService.sendNotificationToUser(
-    parkingRequest.UserId,
-    'Parking Request Status Updated',
-    `Your parking request status is now ${newStatus}`,
-    {
-      type: 'parking_request_status_update',
-      parkingRequestId: parkingRequest.Id.toString(),
-      status: newStatus
-    }
-  );
+  // Notify customer (accepted / rejected / other status)
+  const statusData = {
+    parkingRequestId: parkingRequest.Id.toString(),
+    status: newStatus
+  };
+  if (newStatus === 'Accepted') {
+    await notificationService.notifyParkingRequestAccepted(parkingRequest.UserId, {
+      body: 'Your parking request has been accepted by the operator.',
+      data: statusData
+    });
+  } else if (newStatus === 'Cancelled') {
+    await notificationService.notifyParkingRequestRejected(parkingRequest.UserId, {
+      body: 'Your parking request has been rejected.',
+      data: statusData
+    });
+  } else {
+    await notificationService.sendToUser({
+      userId: parkingRequest.UserId,
+      title: 'Parking Request Status Updated',
+      body: `Your parking request status is now ${newStatus}`,
+      type: notificationService.NOTIFICATION_TYPES.PARKING_REQUEST_STATUS_UPDATE,
+      data: statusData
+    });
+  }
 
   // Emit WebSocket event for real-time update
   websocketService.emitToUser(parkingRequest.UserId, 'parking_request_status_changed', {

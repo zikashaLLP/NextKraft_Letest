@@ -21,6 +21,7 @@ const User = sequelize.define('User', {
     type: DataTypes.ENUM('admin', 'operator', 'customer'),
     allowNull: false
   },
+  /** JSON array of FCM device tokens, e.g. ["token1","token2"]. Legacy single strings still parse. */
   FcmToken: {
     type: DataTypes.TEXT,
     allowNull: true

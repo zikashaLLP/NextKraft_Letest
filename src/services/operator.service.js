@@ -778,12 +778,9 @@ const carIn = async (operatorUserId, floor, floorColumn, parkingRequestId = null
   const palletInfo = pallet.UserGivenPalletNumber || `Level ${pallet.Level}, Column ${pallet.Column}`;
 
   if (customer && customer.user) {
-    await notificationService.sendNotificationToUser(
-      customer.UserId,
-      'Parking Request Accepted',
-      `Your parking request has been accepted. Pallet ${palletInfo} is being moved to parking level with car ${carInfo}.`,
-      {
-        type: 'parking_request_accepted',
+    await notificationService.notifyParkingRequestAccepted(customer.UserId, {
+      body: `Your parking request has been accepted. Pallet ${palletInfo} is being moved to parking level with car ${carInfo}.`,
+      data: {
         requestId: parkingRequest.Id,
         palletId: palletId,
         carId: car.Id,
@@ -791,7 +788,7 @@ const carIn = async (operatorUserId, floor, floorColumn, parkingRequestId = null
         estimatedTime: timeToParking,
         estimatedTimeFormatted: timeToParkingFormatted
       }
-    );
+    });
 
     await websocketService.emitToUser(customer.UserId, 'parking_request_accepted', {
       palletId: palletId.toString(),
@@ -946,18 +943,15 @@ const parkCar = async (operatorUserId, parkingRequestId, palletId) => {
       ? [carForMsg.CarCompany, carForMsg.CarModel, carForMsg.CarNumber].filter(Boolean).join(' ') || 'your car'
       : 'your car';
 
-    await notificationService.sendNotificationToUser(
-      customer.UserId,
-      'Pallet Assigned',
-      `A pallet (${palletInfo}) has been assigned to you for ${carInfo}`,
-      {
-        type: 'pallet_assigned',
+    await notificationService.notifyCarParked(customer.UserId, {
+      body: `Your car ${carInfo} has been parked on pallet ${palletInfo}.`,
+      data: {
         palletId: pallet.Id.toString(),
         customerId: customer.Id.toString(),
         carId: car.Id.toString(),
         parkingRequestId: parkingRequest.Id.toString()
       }
-    );
+    });
 
     await websocketService.emitToUser(customer.UserId, 'pallet_assigned', {
       palletId: pallet.Id.toString(),
@@ -1273,25 +1267,37 @@ const updateRequestStatus = async (operatorUserId, requestId, newStatus) => {
 
   // Send notification to customer when operator changes request status
   if (request.user) {
-    const statusMessages = {
-      'Accepted': 'Your car release request has been accepted by the operator',
-      'Queued': 'Your car release request has been queued for processing',
-      'Completed': 'Your car has been released successfully',
-      'Cancelled': 'Your car release request has been cancelled'
+    const statusData = {
+      requestId: requestId.toString(),
+      status: newStatus
     };
-
-    const message = statusMessages[newStatus] || `Your car release request status has been updated to ${newStatus}`;
-    
-    await notificationService.sendNotificationToUser(
-      request.user.Id,
-      'Request Status Updated',
-      message,
-      {
-        type: 'request_status_update',
-        requestId: requestId.toString(),
-        status: newStatus
-      }
-    );
+    if (newStatus === 'Accepted') {
+      await notificationService.notifyReleaseRequestAccepted(request.user.Id, {
+        body: 'Your car release request has been accepted by the operator.',
+        data: statusData
+      });
+    } else if (newStatus === 'Cancelled') {
+      await notificationService.notifyReleaseRequestRejected(request.user.Id, {
+        body: 'Your car release request has been rejected.',
+        data: statusData
+      });
+    } else if (newStatus === 'Completed') {
+      await notificationService.notifyCarReleased(request.user.Id, {
+        body: 'Your car has been released successfully.',
+        data: statusData
+      });
+    } else {
+      await notificationService.sendToUser({
+        userId: request.user.Id,
+        title: 'Request Status Updated',
+        body:
+          newStatus === 'Queued'
+            ? 'Your car release request has been queued for processing.'
+            : `Your car release request status has been updated to ${newStatus}`,
+        type: notificationService.NOTIFICATION_TYPES.REQUEST_STATUS_UPDATE,
+        data: statusData
+      });
+    }
 
     // Emit WebSocket event for real-time update
     
@@ -1885,18 +1891,15 @@ const callSpecificPallet = async (
 
   // Step 12: Send notification to customer with estimated time
   if (request.user) {
-    await notificationService.sendNotificationToUser(
-      request.UserId,
-      'Request Accepted',
-      `Your car release request has been accepted. Pallet is being moved to ground level. Estimated time: ${timeToCallFormatted}.`,
-      {
-        type: 'request_accepted',
+    await notificationService.notifyReleaseRequestAccepted(request.UserId, {
+      body: `Your car release request has been accepted. Pallet is being moved to ground level. Estimated time: ${timeToCallFormatted}.`,
+      data: {
         requestId: requestId.toString(),
         palletId: palletId.toString(),
         estimatedTime: timeToCall,
         estimatedTimeFormatted: timeToCallFormatted
       }
-    );
+    });
   }
   
   // Emit WebSocket event to customer
@@ -2182,16 +2185,13 @@ const releaseParkedCar = async (operatorUserId, requestId) => {
     const palletInfo = pallet.UserGivenPalletNumber || `Level ${pallet.Level || pallet.LevelBelowGround}, Column ${pallet.Column}`;
     const carInfo = request.car ? `${request.car.CarCompany} ${request.car.CarModel} (${request.car.CarNumber})` : 'your car';
     
-    await notificationService.sendNotificationToUser(
-      request.UserId,
-      'Car Released',
-      `Your car ${carInfo} has been released from pallet ${palletInfo}`,
-      {
-        type: 'car_released',
+    await notificationService.notifyCarReleased(request.UserId, {
+      body: `Your car ${carInfo} has been released from pallet ${palletInfo}`,
+      data: {
         palletId: palletId.toString(),
         requestId: resolvedRequestId.toString()
       }
-    );
+    });
 
     // Emit WebSocket event to customer
     await websocketService.emitToUser(request.UserId, 'car_released', {
@@ -2401,18 +2401,15 @@ const callPalletAndCreateRequest = async (operatorUserId, palletId) => {
 
   // Step 13: Send notification to customer with estimated time
   if (customer && customer.user) {
-    await notificationService.sendNotificationToUser(
-      pallet.UserId,
-      'Request Accepted',
-      `Your car release request has been accepted. Pallet is being moved to ground level. Estimated time: ${timeToCallFormatted}.`,
-      {
-        type: 'request_accepted',
+    await notificationService.notifyReleaseRequestAccepted(pallet.UserId, {
+      body: `Your car release request has been accepted. Pallet is being moved to ground level. Estimated time: ${timeToCallFormatted}.`,
+      data: {
         requestId: request.Id.toString(),
         palletId: palletId.toString(),
         estimatedTime: timeToCall,
         estimatedTimeFormatted: timeToCallFormatted
       }
-    );
+    });
 
     // Emit WebSocket event to customer
     await websocketService.emitToUser(pallet.UserId, 'request_accepted', {
@@ -2647,18 +2644,15 @@ const callPalletByCarNumber = async (
 
   // Step 11: Send notification to customer
   if (customer && customer.user) {
-    await notificationService.sendNotificationToUser(
-      car.UserId,
-      'Car Release Request Accepted',
-      `Your car release request has been accepted. Pallet is being moved to ground level. Estimated time: ${timeToCallFormatted}.`,
-      {
-        type: 'request_accepted',
+    await notificationService.notifyReleaseRequestAccepted(car.UserId, {
+      body: `Your car release request has been accepted. Pallet is being moved to ground level. Estimated time: ${timeToCallFormatted}.`,
+      data: {
         requestId: request.Id.toString(),
         palletId: parkedPallet.Id.toString(),
         estimatedTime: timeToCall,
         estimatedTimeFormatted: timeToCallFormatted
       }
-    );
+    });
 
     // Emit WebSocket event to customer
     await websocketService.emitToUser(car.UserId, 'request_accepted', {

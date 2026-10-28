@@ -141,6 +141,29 @@ router.post('/login', validateLogin, authController.login);
 
 /**
  * @swagger
+ * /api/auth/logout:
+ *   post:
+ *     summary: Logout and remove this device FCM token from the user token array
+ *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               fcmToken:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Logout successful
+ */
+router.post('/logout', authenticate, authController.logout);
+
+/**
+ * @swagger
  * /api/auth/user-profile:
  *   get:
  *     summary: Get profile by user ID (authenticated)

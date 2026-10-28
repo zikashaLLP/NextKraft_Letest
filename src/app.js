@@ -19,6 +19,7 @@ const operatorRoutes = require('./routes/operator.routes');
 const adminRoutes = require('./routes/admin.routes');
 const errorLogRoutes = require('./routes/errorLog.routes');
 const systemLogRoutes = require('./routes/systemLog.routes');
+const notificationRoutes = require('./routes/notification.routes');
 
 const app = express();
 const server = http.createServer(app);
@@ -79,6 +80,7 @@ app.use('/api/operator', operatorRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/error-logs', errorLogRoutes);
 app.use('/api/system-logs', systemLogRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 // 404 handler
 app.use((req, res) => {
