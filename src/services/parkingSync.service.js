@@ -397,7 +397,7 @@ const ensureParkingRequestCompleted = async (
       },
       { transaction }
     );
-  } else {
+  } else if (parkingRequest.Status !== 'Completed') {
     await parkingRequest.update(
       {
         Status: 'Completed',
@@ -408,6 +408,94 @@ const ensureParkingRequestCompleted = async (
   }
 
   return parkingRequest;
+};
+
+/**
+ * Complete an open release Request for this car/pallet, or create Completed history.
+ * Mirrors ensureParkingRequestCompleted for retrieval sync rows.
+ */
+const ensureReleaseRequestCompleted = async (
+  operator,
+  car,
+  pallet,
+  retrieveAt,
+  parkingAt,
+  transaction
+) => {
+  const doneAt = asDate(retrieveAt, getISTTime());
+  const createdAt = asDate(parkingAt, doneAt);
+
+  let openRequest = await Request.findOne({
+    where: {
+      CarId: car.Id,
+      ProjectId: operator.ProjectId,
+      ParkingSystemId: operator.ParkingSystemId,
+      Status: { [Op.notIn]: ['Completed', 'Cancelled'] }
+    },
+    order: [['UpdatedAt', 'DESC']],
+    transaction
+  });
+
+  if (!openRequest) {
+    openRequest = await Request.findOne({
+      where: {
+        PalletAllotmentId: pallet.Id,
+        ProjectId: operator.ProjectId,
+        ParkingSystemId: operator.ParkingSystemId,
+        Status: { [Op.notIn]: ['Completed', 'Cancelled'] }
+      },
+      order: [['UpdatedAt', 'DESC']],
+      transaction
+    });
+  }
+
+  if (openRequest) {
+    await openRequest.update(
+      {
+        Status: 'Completed',
+        UpdatedAt: doneAt
+      },
+      { transaction }
+    );
+
+    await RequestQueue.create(
+      {
+        UserId: openRequest.UserId,
+        PalletAllotmentId: openRequest.PalletAllotmentId,
+        ProjectId: openRequest.ProjectId,
+        ParkingSystemId: openRequest.ParkingSystemId,
+        CarId: openRequest.CarId,
+        OperatorId: operator.Id,
+        Status: 'Completed',
+        EstimatedTime: openRequest.EstimatedTime || 0,
+        CreatedAt: openRequest.CreatedAt || createdAt,
+        UpdatedAt: doneAt
+      },
+      { transaction }
+    );
+
+    await openRequest.destroy({ transaction });
+    return { requestId: openRequest.Id, created: false };
+  }
+
+  // No open release request — create durable Completed queue history for this car.
+  const queued = await RequestQueue.create(
+    {
+      UserId: car.UserId,
+      PalletAllotmentId: pallet.Id,
+      ProjectId: operator.ProjectId,
+      ParkingSystemId: operator.ParkingSystemId,
+      CarId: car.Id,
+      OperatorId: operator.Id,
+      Status: 'Completed',
+      EstimatedTime: 0,
+      CreatedAt: createdAt,
+      UpdatedAt: doneAt
+    },
+    { transaction }
+  );
+
+  return { requestId: null, queueId: queued.Id, created: true };
 };
 
 /** Pallet already Assigned to a car whose plate last-4 matches history last-4 (park-car race / already correct). */
@@ -820,60 +908,14 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
         continue;
       }
 
-      const openRequest = await Request.findOne({
-        where: {
-          PalletAllotmentId: targetPallet.Id,
-          ProjectId: operator.ProjectId,
-          ParkingSystemId: operator.ParkingSystemId,
-          Status: { [Op.notIn]: ['Completed', 'Cancelled'] }
-        },
-        order: [['UpdatedAt', 'DESC']],
-        transaction: t
-      });
-
-      if (openRequest) {
-        await openRequest.update(
-          {
-            Status: 'Completed',
-            UpdatedAt: retrieveAt
-          },
-          { transaction: t }
-        );
-
-        await RequestQueue.create(
-          {
-            UserId: openRequest.UserId,
-            PalletAllotmentId: openRequest.PalletAllotmentId,
-            ProjectId: openRequest.ProjectId,
-            ParkingSystemId: openRequest.ParkingSystemId,
-            CarId: openRequest.CarId,
-            OperatorId: operator.Id,
-            Status: 'Completed',
-            EstimatedTime: openRequest.EstimatedTime || 0,
-            CreatedAt: openRequest.CreatedAt || parkingAt,
-            UpdatedAt: retrieveAt
-          },
-          { transaction: t }
-        );
-
-        await openRequest.destroy({ transaction: t });
-      } else {
-        await RequestQueue.create(
-          {
-            UserId: customer.UserId,
-            PalletAllotmentId: targetPallet.Id,
-            ProjectId: operator.ProjectId,
-            ParkingSystemId: operator.ParkingSystemId,
-            CarId: car.Id,
-            OperatorId: operator.Id,
-            Status: 'Completed',
-            EstimatedTime: 0,
-            CreatedAt: parkingAt,
-            UpdatedAt: retrieveAt
-          },
-          { transaction: t }
-        );
-      }
+      await ensureReleaseRequestCompleted(
+        operator,
+        car,
+        targetPallet,
+        retrieveAt,
+        parkingAt,
+        t
+      );
 
       await targetPallet.update(
         {
