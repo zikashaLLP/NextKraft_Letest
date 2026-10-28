@@ -11,9 +11,13 @@ const {
   Customer,
   ParkingRequest,
   Request,
-  RequestQueue
+  RequestQueue,
+  CarAllotSyncLedger
 } = require('../models/associations');
 const { CAR_TYPE_VALUES } = require('../utils/constant');
+
+const PHASE_PARKING = 'parking';
+const PHASE_RETRIEVAL = 'retrieval';
 
 const getISTTime = () => {
   const now = new Date();
@@ -29,6 +33,19 @@ const asDate = (value, fallback = null) => {
 };
 
 const normalizeCarNumber = (value) => String(value ?? '').trim();
+
+/** Omron sends last-4 (or full plate); normalize to last 4 non-space digits/chars. */
+const normalizeLast4 = (value) => {
+  const stripped = normalizeCarNumber(value).replace(/\s+/g, '');
+  if (!stripped) return '';
+  return stripped.length <= 4 ? stripped : stripped.slice(-4);
+};
+
+const plateLast4 = (carNumber) => normalizeLast4(carNumber);
+
+const isDummyUsername = (username) =>
+  typeof username === 'string' && username.toLowerCase().startsWith('dummynextcraft');
+
 const normalizeCarType = (value) => {
   const raw = String(value ?? '').trim().toLowerCase();
   if (!raw) return null;
@@ -83,6 +100,59 @@ const resolvePalletWhere = (operator, parkingSystemType, floorMapping) => {
     where.LevelBelowGround = Math.abs(floor);
   }
   return where;
+};
+
+const findLedger = async (syncUuid, phase, transaction) => {
+  if (!syncUuid) return null;
+  return CarAllotSyncLedger.findOne({
+    where: { SyncUuid: syncUuid, Phase: phase },
+    transaction
+  });
+};
+
+const writeLedger = async (
+  {
+    syncUuid,
+    historyId,
+    phase,
+    operator,
+    palletId,
+    carId,
+    userId,
+    parkingRequestId
+  },
+  transaction
+) => {
+  if (!syncUuid) return null;
+
+  const existing = await findLedger(syncUuid, phase, transaction);
+  if (existing) return existing;
+
+  const istTime = getISTTime();
+  try {
+    return await CarAllotSyncLedger.create(
+      {
+        SyncUuid: syncUuid,
+        OmronHistoryId: historyId != null ? parseInt(historyId, 10) || null : null,
+        Phase: phase,
+        ParkingSystemId: operator.ParkingSystemId,
+        ProjectId: operator.ProjectId,
+        PalletId: palletId ?? null,
+        CarId: carId ?? null,
+        UserId: userId ?? null,
+        ParkingRequestId: parkingRequestId ?? null,
+        Status: 'applied',
+        CreatedAt: istTime,
+        UpdatedAt: istTime
+      },
+      { transaction }
+    );
+  } catch (err) {
+    // Concurrent insert: treat unique violation as already applied.
+    const raced = await findLedger(syncUuid, phase, transaction);
+    if (raced) return raced;
+    throw err;
+  }
 };
 
 const findOrCreateDummyCustomer = async (operator, operatorUserId, transaction) => {
@@ -148,20 +218,34 @@ const findOrCreateDummyCustomer = async (operator, operatorUserId, transaction) 
   return { user, customer };
 };
 
-const resolveOrCreateCarAndCustomer = async (
-  operator,
-  operatorUserId,
-  carNumber,
-  floorMappingCarType,
-  transaction
-) => {
-  const normalizedCarNumber = normalizeCarNumber(carNumber);
-  if (!normalizedCarNumber) {
-    throw new Error('carNumber is required');
+/** Cars in operator project + parking system whose plate ends with last4 (same rule as car-in / retrieve). */
+const findCarsMatchingLast4InOperatorScope = async (operator, last4, transaction) => {
+  const customerRows = await Customer.findAll({
+    where: {
+      ProjectId: operator.ProjectId,
+      ParkingSystemId: operator.ParkingSystemId
+    },
+    attributes: ['UserId'],
+    transaction
+  });
+  const userIds = [...new Set(customerRows.map((c) => c.UserId))];
+  if (userIds.length === 0) {
+    return [];
   }
 
-  let car = await Car.findOne({
-    where: { CarNumber: normalizedCarNumber },
+  return Car.findAll({
+    where: {
+      UserId: { [Op.in]: userIds },
+      [Op.and]: sequelize.where(
+        sequelize.fn(
+          'RIGHT',
+          sequelize.fn('REPLACE', sequelize.col('CarNumber'), ' ', ''),
+          4
+        ),
+        last4
+      )
+    },
+    attributes: ['Id', 'UserId', 'CarType', 'CarModel', 'CarCompany', 'CarNumber'],
     include: [
       {
         model: User,
@@ -171,39 +255,90 @@ const resolveOrCreateCarAndCustomer = async (
     ],
     transaction
   });
+};
 
-  if (car) {
-    const customer = await Customer.findOne({
-      where: {
-        UserId: car.UserId,
-        ProjectId: operator.ProjectId,
-        ParkingSystemId: operator.ParkingSystemId
-      },
-      transaction
-    });
+const loadApprovedCustomerForCar = async (operator, car, transaction) => {
+  const customer = await Customer.findOne({
+    where: {
+      UserId: car.UserId,
+      ProjectId: operator.ProjectId,
+      ParkingSystemId: operator.ParkingSystemId
+    },
+    transaction
+  });
+  if (!customer) {
+    throw new Error('Customer not found for this car');
+  }
+  if (customer.Status !== 'Approved') {
+    throw new Error('Customer is not approved. Only approved customers can be assigned to pallets');
+  }
+  return customer;
+};
 
-    if (!customer) {
-      throw new Error('Customer not found for this car');
-    }
-    if (customer.Status !== 'Approved') {
-      throw new Error('Customer is not approved. Only approved customers can be assigned to pallets');
-    }
-
-    return { car, customer };
+/**
+ * Customer-first car resolve for parking-sync.
+ * Never creates dummy when a real customer car matches last-4.
+ */
+const resolveOrCreateCarAndCustomer = async (
+  operator,
+  operatorUserId,
+  carNumber,
+  floorMappingCarType,
+  transaction
+) => {
+  const last4 = normalizeLast4(carNumber);
+  if (!last4) {
+    throw new Error('carNumber is required');
   }
 
+  const matches = await findCarsMatchingLast4InOperatorScope(operator, last4, transaction);
+  const realMatches = matches.filter((c) => !isDummyUsername(c.user?.Username));
+  const dummyMatches = matches.filter((c) => isDummyUsername(c.user?.Username));
+
+  let chosen = null;
+
+  if (realMatches.length > 1) {
+    // Prefer car with open / Accepted / Queued parking request for this system.
+    const openReqs = await ParkingRequest.findAll({
+      where: {
+        ProjectId: operator.ProjectId,
+        ParkingSystemId: operator.ParkingSystemId,
+        CarId: { [Op.in]: realMatches.map((c) => c.Id) },
+        Status: { [Op.in]: ['Pending', 'Accepted', 'Queued'] }
+      },
+      order: [['UpdatedAt', 'DESC']],
+      transaction
+    });
+    const preferredIds = [...new Set(openReqs.map((r) => r.CarId))];
+    if (preferredIds.length === 1) {
+      chosen = realMatches.find((c) => c.Id === preferredIds[0]);
+    } else {
+      throw new Error('Multiple cars match last 4 digits in this parking system');
+    }
+  } else if (realMatches.length === 1) {
+    chosen = realMatches[0];
+  } else if (dummyMatches.length >= 1) {
+    chosen = dummyMatches[0];
+  }
+
+  if (chosen) {
+    const customer = await loadApprovedCustomerForCar(operator, chosen, transaction);
+    return { car: chosen, customer };
+  }
+
+  // Zero matches: true walk-in — create dummy user/car with the last-4 as CarNumber.
   const { user, customer } = await findOrCreateDummyCustomer(operator, operatorUserId, transaction);
   const normalizedCarType = normalizeCarType(floorMappingCarType);
   const carType = CAR_TYPE_VALUES.includes(normalizedCarType) ? normalizedCarType : null;
   const istTime = getISTTime();
 
-  car = await Car.create(
+  const car = await Car.create(
     {
       UserId: user.Id,
       CarType: carType,
       CarModel: null,
       CarCompany: null,
-      CarNumber: normalizedCarNumber,
+      CarNumber: last4,
       CreatedAt: istTime,
       UpdatedAt: istTime
     },
@@ -223,16 +358,31 @@ const ensureParkingRequestCompleted = async (
   const reqTime = asDate(parkingTime, getISTTime());
   const updTime = asDate(updatedAt, reqTime);
 
+  // Prefer open request for this car, then any latest request.
   let parkingRequest = await ParkingRequest.findOne({
     where: {
       UserId: car.UserId,
       ProjectId: operator.ProjectId,
       ParkingSystemId: operator.ParkingSystemId,
-      CarId: car.Id
+      CarId: car.Id,
+      Status: { [Op.in]: ['Pending', 'Accepted', 'Queued'] }
     },
     order: [['UpdatedAt', 'DESC']],
     transaction
   });
+
+  if (!parkingRequest) {
+    parkingRequest = await ParkingRequest.findOne({
+      where: {
+        UserId: car.UserId,
+        ProjectId: operator.ProjectId,
+        ParkingSystemId: operator.ParkingSystemId,
+        CarId: car.Id
+      },
+      order: [['UpdatedAt', 'DESC']],
+      transaction
+    });
+  }
 
   if (!parkingRequest) {
     parkingRequest = await ParkingRequest.create(
@@ -258,6 +408,22 @@ const ensureParkingRequestCompleted = async (
   }
 
   return parkingRequest;
+};
+
+/** Pallet already Assigned to a car whose plate last-4 matches history last-4 (park-car race / already correct). */
+const loadAssignedPalletCarIfLast4Matches = async (pallet, historyLast4, transaction) => {
+  if (pallet.Status !== 'Assigned' || !pallet.CarId || pallet.UserId === 0) {
+    return null;
+  }
+  const assignedCar = await Car.findByPk(pallet.CarId, {
+    include: [{ model: User, as: 'user', attributes: ['Id', 'Username', 'Role'] }],
+    transaction
+  });
+  if (!assignedCar) return null;
+  if (plateLast4(assignedCar.CarNumber) !== historyLast4) {
+    return { conflict: true, assignedCar };
+  }
+  return { conflict: false, assignedCar };
 };
 
 const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
@@ -323,12 +489,74 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
 
     const t = await sequelize.transaction();
     try {
+      if (!syncUuid) {
+        throw new Error('syncUuid is required for durable parking-sync ACK');
+      }
+
       const floorMapping = row.floorMapping;
       if (!floorMapping || typeof floorMapping !== 'object') {
         throw new Error('floorMapping is required for each history row');
       }
       if (parseInt(floorMapping.parkingSystemId, 10) !== operator.ParkingSystemId) {
         throw new Error('floorMapping does not belong to operator parking system');
+      }
+
+      const historyLast4 = normalizeLast4(row.carNumber);
+      if (!historyLast4) {
+        throw new Error('carNumber is required');
+      }
+
+      const parkingAt = asDate(row.parkingTime, getISTTime());
+      const rowUpdatedAt = asDate(row.updatedAt, parkingAt);
+      const retrieveAt = asDate(row.retriveTime, null);
+
+      const parkingAckedOmron = row.isParkingSync === true;
+      const retrievalAckedOmron = row.isRetrivalSync === true;
+      const needsParking = !parkingAckedOmron;
+      const needsRetrieval = !!retrieveAt && !retrievalAckedOmron;
+
+      const parkingLedger = await findLedger(syncUuid, PHASE_PARKING, t);
+      const retrievalLedger = retrieveAt
+        ? await findLedger(syncUuid, PHASE_RETRIEVAL, t)
+        : null;
+
+      // Durable idempotency: ledger wins over Omron flag heuristics.
+      if (parkingLedger && (!retrieveAt || retrievalLedger)) {
+        await t.commit();
+        skipped.push({
+          historyId,
+          syncUuid,
+          reason: 'Already recorded in CarAllotSyncLedger'
+        });
+        pushAck(syncUuid, true, !!retrieveAt, historyId);
+        continue;
+      }
+
+      if (parkingLedger && !retrieveAt) {
+        await t.commit();
+        skipped.push({
+          historyId,
+          syncUuid,
+          reason: 'Parking phase already recorded in CarAllotSyncLedger'
+        });
+        pushAck(syncUuid, true, false, historyId);
+        continue;
+      }
+
+      if (!needsParking && !needsRetrieval && parkingLedger && (!retrieveAt || retrievalLedger)) {
+        await t.commit();
+        skipped.push({
+          historyId,
+          syncUuid,
+          reason: 'Nothing pending (ledger + Omron already ACKed)'
+        });
+        pushAck(syncUuid, true, !!retrieveAt && !!retrievalLedger, historyId);
+        continue;
+      }
+
+      // Omron says already ACKed but no ledger: do not speculative-ACK without verifying ownership.
+      if (!needsParking && !needsRetrieval && !parkingLedger) {
+        // Fall through to verify pallet ownership below when we resolve pallet.
       }
 
       const palletWhere = resolvePalletWhere(operator, operator.parkingSystem.Type, floorMapping);
@@ -341,72 +569,124 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
         throw new Error('Matching pallet not found for floor mapping');
       }
 
-      const { car, customer } = await resolveOrCreateCarAndCustomer(
-        operator,
-        operatorUserId,
-        row.carNumber,
-        floorMapping.carType,
-        t
-      );
-
-      const parkingAt = asDate(row.parkingTime, getISTTime());
-      const rowUpdatedAt = asDate(row.updatedAt, parkingAt);
-      const retrieveAt = asDate(row.retriveTime, null);
-
-      // Omron flags are ACK-only: false = not yet ACKed / needs apply; true = already ACKed.
-      const parkingAcked = row.isParkingSync === true;
-      const retrievalAcked = row.isRetrivalSync === true;
-      const needsParking = !parkingAcked;
-      const needsRetrieval = !!retrieveAt && !retrievalAcked;
-
-      if (!needsParking && !needsRetrieval) {
-        await t.commit();
-        skipped.push({ historyId, syncUuid, reason: 'Nothing pending (parking and retrieval already ACKed)' });
-        pushAck(syncUuid, true, !!retrieveAt && retrievalAcked, historyId);
-        continue;
+      // Overwrite guard / park-car race: pallet already Assigned to matching last-4.
+      const assignedCheck = await loadAssignedPalletCarIfLast4Matches(pallet, historyLast4, t);
+      if (assignedCheck?.conflict) {
+        throw new Error(
+          'Pallet is already assigned to a different car (last-4 mismatch); refusing overwrite'
+        );
       }
 
+      let car;
+      let customer;
+      let parkingRequestId = null;
+
+      if (assignedCheck && !assignedCheck.conflict) {
+        car = assignedCheck.assignedCar;
+        customer = await loadApprovedCustomerForCar(operator, car, t);
+      } else {
+        ({ car, customer } = await resolveOrCreateCarAndCustomer(
+          operator,
+          operatorUserId,
+          row.carNumber,
+          floorMapping.carType,
+          t
+        ));
+      }
+
+      // Parking-only path (no retrieve yet)
       if (!retrieveAt) {
-        if (!needsParking) {
+        if (parkingLedger) {
           await t.commit();
-          skipped.push({ historyId, syncUuid, reason: 'Parking already ACKed and retriveTime is null' });
+          skipped.push({
+            historyId,
+            syncUuid,
+            reason: 'Parking phase already recorded in CarAllotSyncLedger'
+          });
           pushAck(syncUuid, true, false, historyId);
           continue;
         }
-        const existingCompleted = await ParkingRequest.findOne({
-          where: {
-            UserId: car.UserId,
-            ProjectId: operator.ProjectId,
-            ParkingSystemId: operator.ParkingSystemId,
-            CarId: car.Id,
-            Status: 'Completed'
-          },
-          transaction: t
-        });
 
-        const alreadyApplied =
+        const alreadyCorrect =
           pallet.Status === 'Assigned' &&
           pallet.UserId === customer.UserId &&
-          pallet.CarId === car.Id &&
-          !!existingCompleted;
+          pallet.CarId === car.Id;
 
-        if (alreadyApplied) {
+        if (alreadyCorrect || (assignedCheck && !assignedCheck.conflict)) {
+          const completedReq = await ensureParkingRequestCompleted(
+            operator,
+            car,
+            parkingAt,
+            rowUpdatedAt,
+            t
+          );
+          parkingRequestId = completedReq?.Id ?? null;
+          await writeLedger(
+            {
+              syncUuid,
+              historyId,
+              phase: PHASE_PARKING,
+              operator,
+              palletId: pallet.Id,
+              carId: car.Id,
+              userId: customer.UserId,
+              parkingRequestId
+            },
+            t
+          );
           await t.commit();
-          skipped.push({ historyId, syncUuid, reason: 'Already synced state for active parking record' });
+          skipped.push({
+            historyId,
+            syncUuid,
+            reason: 'Already synced state for active parking record'
+          });
           pushAck(syncUuid, true, false, historyId);
           continue;
         }
 
-        await ensureParkingRequestCompleted(operator, car, parkingAt, rowUpdatedAt, t);
+        if (!needsParking && !alreadyCorrect) {
+          // Omron claimed parking ACKed but NextKraft state is wrong and no ledger — fail so retry can fix.
+          throw new Error(
+            'Omron parking flag ACKed but NextKraft pallet ownership not verified; refusing speculative ACK'
+          );
+        }
+
+        const completedReq = await ensureParkingRequestCompleted(
+          operator,
+          car,
+          parkingAt,
+          rowUpdatedAt,
+          t
+        );
+        parkingRequestId = completedReq?.Id ?? null;
+
         await pallet.update(
           {
             UserId: customer.UserId,
             CarId: car.Id,
-            CarType: car.CarType || (CAR_TYPE_VALUES.includes(floorMapping.carType) ? floorMapping.carType : null),
+            CarType:
+              car.CarType ||
+              (CAR_TYPE_VALUES.includes(normalizeCarType(floorMapping.carType))
+                ? normalizeCarType(floorMapping.carType)
+                : null),
             Status: 'Assigned',
             UpdatedAt: rowUpdatedAt
           },
           { transaction: t }
+        );
+
+        await writeLedger(
+          {
+            syncUuid,
+            historyId,
+            phase: PHASE_PARKING,
+            operator,
+            palletId: pallet.Id,
+            carId: car.Id,
+            userId: customer.UserId,
+            parkingRequestId
+          },
+          t
         );
 
         await t.commit();
@@ -424,17 +704,33 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
         continue;
       }
 
-      if (!needsRetrieval) {
+      // Retrieval path
+      if (retrievalLedger) {
+        if (!parkingLedger) {
+          await writeLedger(
+            {
+              syncUuid,
+              historyId,
+              phase: PHASE_PARKING,
+              operator,
+              palletId: pallet.Id,
+              carId: car.Id,
+              userId: customer.UserId,
+              parkingRequestId: null
+            },
+            t
+          );
+        }
         await t.commit();
-        skipped.push({ historyId, syncUuid, reason: 'Retrival already ACKed' });
+        skipped.push({ historyId, syncUuid, reason: 'Retrieval phase already recorded in CarAllotSyncLedger' });
         pushAck(syncUuid, true, true, historyId);
         continue;
       }
 
       let targetPallet = pallet;
 
-      // Recovery path: parking already ACKed, retrieval pending; car may be on another pallet.
-      if (parkingAcked && retrieveAt) {
+      // Recovery: parking already in ledger or Omron ACKed; car may be on another pallet.
+      if ((parkingLedger || parkingAckedOmron) && retrieveAt) {
         const parkedPallet = await PalletAllotment.findOne({
           where: {
             ParkingSystemId: operator.ParkingSystemId,
@@ -448,21 +744,49 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
         if (parkedPallet) {
           targetPallet = parkedPallet;
         }
-      } else {
-        // Ensure parking state exists before retrieve completion.
+      } else if (!parkingLedger) {
         await ensureParkingRequestCompleted(operator, car, parkingAt, rowUpdatedAt, t);
         if (needsParking && targetPallet.Status !== 'Assigned') {
-          await targetPallet.update(
-            {
-              UserId: customer.UserId,
-              CarId: car.Id,
-              CarType: car.CarType || (CAR_TYPE_VALUES.includes(floorMapping.carType) ? floorMapping.carType : null),
-              Status: 'Assigned',
-              UpdatedAt: rowUpdatedAt
-            },
-            { transaction: t }
+          const otherAssigned = await loadAssignedPalletCarIfLast4Matches(
+            targetPallet,
+            historyLast4,
+            t
           );
+          if (otherAssigned?.conflict) {
+            throw new Error(
+              'Pallet is already assigned to a different car (last-4 mismatch); refusing overwrite'
+            );
+          }
+          if (!otherAssigned) {
+            await targetPallet.update(
+              {
+                UserId: customer.UserId,
+                CarId: car.Id,
+                CarType:
+                  car.CarType ||
+                  (CAR_TYPE_VALUES.includes(normalizeCarType(floorMapping.carType))
+                    ? normalizeCarType(floorMapping.carType)
+                    : null),
+                Status: 'Assigned',
+                UpdatedAt: rowUpdatedAt
+              },
+              { transaction: t }
+            );
+          }
         }
+        await writeLedger(
+          {
+            syncUuid,
+            historyId,
+            phase: PHASE_PARKING,
+            operator,
+            palletId: targetPallet.Id,
+            carId: car.Id,
+            userId: customer.UserId,
+            parkingRequestId: null
+          },
+          t
+        );
       }
 
       const dedupeQueue = await RequestQueue.findOne({
@@ -477,6 +801,19 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
       });
 
       if (targetPallet.Status === 'Released' && targetPallet.CarId === null && dedupeQueue) {
+        await writeLedger(
+          {
+            syncUuid,
+            historyId,
+            phase: PHASE_RETRIEVAL,
+            operator,
+            palletId: targetPallet.Id,
+            carId: car.Id,
+            userId: customer.UserId,
+            parkingRequestId: null
+          },
+          t
+        );
         await t.commit();
         skipped.push({ historyId, syncUuid, reason: 'Already synced state for retrieved record' });
         pushAck(syncUuid, true, true, historyId);
@@ -547,6 +884,20 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
           UpdatedAt: retrieveAt
         },
         { transaction: t }
+      );
+
+      await writeLedger(
+        {
+          syncUuid,
+          historyId,
+          phase: PHASE_RETRIEVAL,
+          operator,
+          palletId: targetPallet.Id,
+          carId: car.Id,
+          userId: customer.UserId,
+          parkingRequestId: null
+        },
+        t
       );
 
       await t.commit();

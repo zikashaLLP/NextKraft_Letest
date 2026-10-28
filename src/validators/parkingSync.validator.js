@@ -21,7 +21,8 @@ const validateParkingSync = [
     .isInt({ min: 1 })
     .withMessage('carAllotHistory id must be a positive integer'),
   body('carAllotHistory.*.syncUuid')
-    .optional({ nullable: true })
+    .notEmpty()
+    .withMessage('syncUuid is required for each history row')
     .isString()
     .withMessage('syncUuid must be a string')
     .bail()
