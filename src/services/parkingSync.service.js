@@ -15,6 +15,8 @@ const {
   CarAllotSyncLedger
 } = require('../models/associations');
 const { CAR_TYPE_VALUES } = require('../utils/constant');
+const notificationService = require('./notification.service');
+const websocketService = require('./websocket.service');
 
 const PHASE_PARKING = 'parking';
 const PHASE_RETRIEVAL = 'retrieval';
@@ -348,6 +350,11 @@ const resolveOrCreateCarAndCustomer = async (
   return { car, customer };
 };
 
+/**
+ * Complete (or synthesize) parking request for sync.
+ * Returns hadExistingOpenRequest=true only when an open customer parking request was completed
+ * (not when we invent a Completed history row).
+ */
 const ensureParkingRequestCompleted = async (
   operator,
   car,
@@ -371,6 +378,8 @@ const ensureParkingRequestCompleted = async (
     transaction
   });
 
+  let hadExistingOpenRequest = !!parkingRequest;
+
   if (!parkingRequest) {
     parkingRequest = await ParkingRequest.findOne({
       where: {
@@ -383,6 +392,9 @@ const ensureParkingRequestCompleted = async (
       transaction
     });
   }
+
+  let justCompleted = false;
+  let created = false;
 
   if (!parkingRequest) {
     parkingRequest = await ParkingRequest.create(
@@ -397,7 +409,12 @@ const ensureParkingRequestCompleted = async (
       },
       { transaction }
     );
+    created = true;
   } else if (parkingRequest.Status !== 'Completed') {
+    // Only count as "existing open" if it was Pending/Accepted/Queued (not a leftover odd status).
+    hadExistingOpenRequest =
+      hadExistingOpenRequest ||
+      ['Pending', 'Accepted', 'Queued'].includes(parkingRequest.Status);
     await parkingRequest.update(
       {
         Status: 'Completed',
@@ -405,14 +422,20 @@ const ensureParkingRequestCompleted = async (
       },
       { transaction }
     );
+    justCompleted = true;
   }
 
-  return parkingRequest;
+  return {
+    parkingRequest,
+    hadExistingOpenRequest: hadExistingOpenRequest && justCompleted,
+    justCompleted,
+    created
+  };
 };
 
 /**
  * Complete an open release Request for this car/pallet, or create Completed history.
- * Mirrors ensureParkingRequestCompleted for retrieval sync rows.
+ * hadExistingOpenRequest=true only when a real open release request was completed.
  */
 const ensureReleaseRequestCompleted = async (
   operator,
@@ -450,6 +473,11 @@ const ensureReleaseRequestCompleted = async (
   }
 
   if (openRequest) {
+    const requestId = openRequest.Id;
+    const userId = openRequest.UserId;
+    const carId = openRequest.CarId;
+    const palletAllotmentId = openRequest.PalletAllotmentId;
+
     await openRequest.update(
       {
         Status: 'Completed',
@@ -475,7 +503,14 @@ const ensureReleaseRequestCompleted = async (
     );
 
     await openRequest.destroy({ transaction });
-    return { requestId: openRequest.Id, created: false };
+    return {
+      requestId,
+      userId,
+      carId,
+      palletId: palletAllotmentId,
+      hadExistingOpenRequest: true,
+      created: false
+    };
   }
 
   // No open release request — create durable Completed queue history for this car.
@@ -495,7 +530,92 @@ const ensureReleaseRequestCompleted = async (
     { transaction }
   );
 
-  return { requestId: null, queueId: queued.Id, created: true };
+  return {
+    requestId: null,
+    queueId: queued.Id,
+    userId: car.UserId,
+    carId: car.Id,
+    palletId: pallet.Id,
+    hadExistingOpenRequest: false,
+    created: true
+  };
+};
+
+/** After sync commit: notify customer that their parking request finished (car parked). */
+const emitCarParkedIfNeeded = async ({
+  shouldEmit,
+  userId,
+  customerId,
+  car,
+  pallet,
+  parkingRequestId
+}) => {
+  if (!shouldEmit || !userId) return;
+  try {
+    const carInfo = car
+      ? [car.CarCompany, car.CarModel, car.CarNumber].filter(Boolean).join(' ') || 'your car'
+      : 'your car';
+    const palletInfo =
+      pallet?.UserGivenPalletNumber ||
+      `Level ${pallet?.Level ?? pallet?.LevelBelowGround ?? '?'}, Column ${pallet?.Column ?? '?'}`;
+
+    await notificationService.notifyCarParked(userId, {
+      body: `Your car ${carInfo} has been parked on pallet ${palletInfo}.`,
+      data: {
+        palletId: String(pallet?.Id ?? ''),
+        customerId: String(customerId ?? ''),
+        carId: String(car?.Id ?? ''),
+        parkingRequestId: String(parkingRequestId ?? '')
+      }
+    });
+
+    websocketService.emitToUser(userId, 'pallet_assigned', {
+      palletId: String(pallet?.Id ?? ''),
+      customerId: String(customerId ?? ''),
+      carId: String(car?.Id ?? ''),
+      status: 'Assigned',
+      parkingRequestId: String(parkingRequestId ?? '')
+    });
+  } catch (error) {
+    console.error('[PARKING_SYNC] Failed to emit car parked:', error.message || error);
+  }
+};
+
+/** After sync commit: notify customer that their release request finished (car released). */
+const emitCarReleasedIfNeeded = async ({
+  shouldEmit,
+  userId,
+  car,
+  pallet,
+  requestId
+}) => {
+  if (!shouldEmit || !userId) return;
+  try {
+    const carInfo = car
+      ? [car.CarCompany, car.CarModel, car.CarNumber].filter(Boolean).join(' ') || 'your car'
+      : 'your car';
+    const palletInfo =
+      pallet?.UserGivenPalletNumber ||
+      `Level ${pallet?.Level ?? pallet?.LevelBelowGround ?? '?'}, Column ${pallet?.Column ?? '?'}`;
+
+    await notificationService.notifyCarReleased(userId, {
+      body: `Your car ${carInfo} has been released from pallet ${palletInfo}`,
+      data: {
+        palletId: String(pallet?.Id ?? ''),
+        requestId: String(requestId ?? ''),
+        carId: String(car?.Id ?? '')
+      }
+    });
+
+    websocketService.emitToUser(userId, 'car_released', {
+      palletId: pallet?.Id ?? null,
+      requestId: requestId ?? null,
+      carId: car?.Id ?? null,
+      status: 'Completed'
+    });
+  } catch (error) {
+    console.error('[PARKING_SYNC] Failed to emit car released:', error.message || error);
+  }
 };
 
 /** Pallet already Assigned to a car whose plate last-4 matches history last-4 (park-car race / already correct). */
@@ -701,14 +821,14 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
           pallet.CarId === car.Id;
 
         if (alreadyCorrect || (assignedCheck && !assignedCheck.conflict)) {
-          const completedReq = await ensureParkingRequestCompleted(
+          const completedPark = await ensureParkingRequestCompleted(
             operator,
             car,
             parkingAt,
             rowUpdatedAt,
             t
           );
-          parkingRequestId = completedReq?.Id ?? null;
+          parkingRequestId = completedPark.parkingRequest?.Id ?? null;
           await writeLedger(
             {
               syncUuid,
@@ -723,6 +843,14 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
             t
           );
           await t.commit();
+          await emitCarParkedIfNeeded({
+            shouldEmit: completedPark.hadExistingOpenRequest,
+            userId: customer.UserId,
+            customerId: customer.Id,
+            car,
+            pallet,
+            parkingRequestId
+          });
           skipped.push({
             historyId,
             syncUuid,
@@ -739,14 +867,14 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
           );
         }
 
-        const completedReq = await ensureParkingRequestCompleted(
+        const completedPark = await ensureParkingRequestCompleted(
           operator,
           car,
           parkingAt,
           rowUpdatedAt,
           t
         );
-        parkingRequestId = completedReq?.Id ?? null;
+        parkingRequestId = completedPark.parkingRequest?.Id ?? null;
 
         await pallet.update(
           {
@@ -778,6 +906,14 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
         );
 
         await t.commit();
+        await emitCarParkedIfNeeded({
+          shouldEmit: completedPark.hadExistingOpenRequest,
+          userId: customer.UserId,
+          customerId: customer.Id,
+          car,
+          pallet,
+          parkingRequestId
+        });
         applied.push({
           historyId,
           syncUuid,
@@ -816,6 +952,8 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
       }
 
       let targetPallet = pallet;
+      /** Set when this retrieval row also completed an existing open parking request. */
+      let pendingParkEmit = null;
 
       // Recovery: parking already in ledger or Omron ACKed; car may be on another pallet.
       if ((parkingLedger || parkingAckedOmron) && retrieveAt) {
@@ -833,7 +971,13 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
           targetPallet = parkedPallet;
         }
       } else if (!parkingLedger) {
-        await ensureParkingRequestCompleted(operator, car, parkingAt, rowUpdatedAt, t);
+        const midPark = await ensureParkingRequestCompleted(
+          operator,
+          car,
+          parkingAt,
+          rowUpdatedAt,
+          t
+        );
         if (needsParking && targetPallet.Status !== 'Assigned') {
           const otherAssigned = await loadAssignedPalletCarIfLast4Matches(
             targetPallet,
@@ -871,10 +1015,17 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
             palletId: targetPallet.Id,
             carId: car.Id,
             userId: customer.UserId,
-            parkingRequestId: null
+            parkingRequestId: midPark.parkingRequest?.Id ?? null
           },
           t
         );
+        if (midPark.hadExistingOpenRequest) {
+          pendingParkEmit = {
+            userId: customer.UserId,
+            customerId: customer.Id,
+            parkingRequestId: midPark.parkingRequest?.Id ?? null
+          };
+        }
       }
 
       const dedupeQueue = await RequestQueue.findOne({
@@ -908,7 +1059,7 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
         continue;
       }
 
-      await ensureReleaseRequestCompleted(
+      const releaseResult = await ensureReleaseRequestCompleted(
         operator,
         car,
         targetPallet,
@@ -943,6 +1094,26 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
       );
 
       await t.commit();
+
+      if (pendingParkEmit) {
+        await emitCarParkedIfNeeded({
+          shouldEmit: true,
+          userId: pendingParkEmit.userId,
+          customerId: pendingParkEmit.customerId,
+          car,
+          pallet: targetPallet,
+          parkingRequestId: pendingParkEmit.parkingRequestId
+        });
+      }
+
+      await emitCarReleasedIfNeeded({
+        shouldEmit: releaseResult.hadExistingOpenRequest,
+        userId: releaseResult.userId || customer.UserId,
+        car,
+        pallet: targetPallet,
+        requestId: releaseResult.requestId
+      });
+
       applied.push({
         historyId,
         syncUuid,
