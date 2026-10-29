@@ -1274,7 +1274,11 @@ const updateRequestStatus = async (operatorUserId, requestId, newStatus) => {
     if (newStatus === 'Accepted') {
       await notificationService.notifyReleaseRequestAccepted(request.user.Id, {
         body: 'Your car release request has been accepted by the operator.',
-        data: statusData
+        data: {
+          ...statusData,
+          estimatedTime: request.EstimatedTime,
+          updatedAt: request.UpdatedAt
+        }
       });
     } else if (newStatus === 'Cancelled') {
       await notificationService.notifyReleaseRequestRejected(request.user.Id, {
@@ -1300,11 +1304,11 @@ const updateRequestStatus = async (operatorUserId, requestId, newStatus) => {
     }
 
     // Emit WebSocket event for real-time update
-    
     websocketService.emitToUser(request.user.Id, 'request_status_changed', {
       requestId: request.Id,
       carId: request.CarId,
       status: newStatus,
+      estimatedTime: request.EstimatedTime,
       updatedAt: istTime
     });
   }
@@ -1879,6 +1883,7 @@ const callSpecificPallet = async (
   }
 
   // Step 9: Update request status to 'Accepted' and refresh estimated time
+  // UpdatedAt at this moment is the accept timestamp used by the customer countdown.
   const istTime = getISTTime();
   await request.update({
     Status: 'Accepted',
@@ -1888,6 +1893,7 @@ const callSpecificPallet = async (
 
   // Step 10: Format time in minutes only for customer release ETA
   const timeToCallFormatted = formatEstimatedTimeInMinutes(timeToCall);
+  const updatedAtIso = new Date(istTime).toISOString();
 
   // Step 12: Send notification to customer with estimated time
   if (request.user) {
@@ -1897,7 +1903,8 @@ const callSpecificPallet = async (
         requestId: requestId.toString(),
         palletId: palletId.toString(),
         estimatedTime: timeToCall,
-        estimatedTimeFormatted: timeToCallFormatted
+        estimatedTimeFormatted: timeToCallFormatted,
+        updatedAt: updatedAtIso
       }
     });
   }
@@ -1909,7 +1916,8 @@ const callSpecificPallet = async (
     carId: request.CarId,
     status: request.Status,
     estimatedTime: timeToCall,
-    estimatedTimeFormatted: timeToCallFormatted
+    estimatedTimeFormatted: timeToCallFormatted,
+    updatedAt: updatedAtIso
   });
 
   return {
@@ -2390,14 +2398,16 @@ const callPalletAndCreateRequest = async (operatorUserId, palletId) => {
     UpdatedAt: istTime
   });
 
-  // Step 11: Update request status to 'Accepted'
+  // Step 11: Update request status to 'Accepted' (UpdatedAt = accept timestamp for countdown)
   await request.update({
     Status: 'Accepted',
+    EstimatedTime: timeToCall,
     UpdatedAt: istTime
   });
 
   // Step 12: Format time in minutes only for customer release ETA
   const timeToCallFormatted = formatEstimatedTimeInMinutes(timeToCall);
+  const updatedAtIso = new Date(istTime).toISOString();
 
   // Step 13: Send notification to customer with estimated time
   if (customer && customer.user) {
@@ -2407,7 +2417,8 @@ const callPalletAndCreateRequest = async (operatorUserId, palletId) => {
         requestId: request.Id.toString(),
         palletId: palletId.toString(),
         estimatedTime: timeToCall,
-        estimatedTimeFormatted: timeToCallFormatted
+        estimatedTimeFormatted: timeToCallFormatted,
+        updatedAt: updatedAtIso
       }
     });
 
@@ -2418,7 +2429,8 @@ const callPalletAndCreateRequest = async (operatorUserId, palletId) => {
       carId: pallet.CarId,
       status: request.Status,
       estimatedTime: timeToCall,
-      estimatedTimeFormatted: timeToCallFormatted
+      estimatedTimeFormatted: timeToCallFormatted,
+      updatedAt: updatedAtIso
     });
   }
 
@@ -2641,6 +2653,7 @@ const callPalletByCarNumber = async (
 
   // Step 10: Format time in minutes only for customer release ETA
   const timeToCallFormatted = formatEstimatedTimeInMinutes(timeToCall);
+  const updatedAtIso = new Date(istTime).toISOString();
 
   // Step 11: Send notification to customer
   if (customer && customer.user) {
@@ -2650,7 +2663,8 @@ const callPalletByCarNumber = async (
         requestId: request.Id.toString(),
         palletId: parkedPallet.Id.toString(),
         estimatedTime: timeToCall,
-        estimatedTimeFormatted: timeToCallFormatted
+        estimatedTimeFormatted: timeToCallFormatted,
+        updatedAt: updatedAtIso
       }
     });
 
@@ -2661,7 +2675,8 @@ const callPalletByCarNumber = async (
       carId: car.Id,
       status: request.Status,
       estimatedTime: timeToCall,
-      estimatedTimeFormatted: timeToCallFormatted
+      estimatedTimeFormatted: timeToCallFormatted,
+      updatedAt: updatedAtIso
     });
   }
 

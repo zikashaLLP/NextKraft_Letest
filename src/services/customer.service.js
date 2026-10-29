@@ -393,11 +393,16 @@ const getCarList = async (userId) => {
     const parkingRequest = parkingRequestsMap.get(car.Id) || null;
     const pallet = palletsMap.get(car.Id) || null;
 
-    // Calculate estimated time for request if it exists
+    // Pending/Queued: fresh mechanical estimate. Accepted+: keep stored ETA from accept (for countdown).
     let calculatedEstimatedTime = null;
-    if (request && request.palletAllotment && request.parkingSystem) {
+    const isAcceptedOrLater =
+      request &&
+      (request.Status === 'Accepted' || request.Status === 'Completed' || request.Status === 'Cancelled');
+    if (request && !isAcceptedOrLater && request.palletAllotment && request.parkingSystem) {
       calculatedEstimatedTime = calculateEstimatedTime(request.palletAllotment, request.parkingSystem);
     }
+    const requestEstimatedTime =
+      calculatedEstimatedTime !== null ? calculatedEstimatedTime : request?.EstimatedTime;
 
     return {
       id: car.Id,
@@ -441,8 +446,10 @@ const getCarList = async (userId) => {
           status: request.palletAllotment.Status
         } : null,
         status: request.Status,
-        estimatedTime: calculatedEstimatedTime !== null ? calculatedEstimatedTime : request.EstimatedTime,
-        estimatedTimeFormatted: calculatedEstimatedTime !== null ? formatEstimatedTimeInMinutes(calculatedEstimatedTime) : (request.EstimatedTime ? formatEstimatedTimeInMinutes(request.EstimatedTime) : null),
+        estimatedTime: requestEstimatedTime,
+        estimatedTimeFormatted: requestEstimatedTime
+          ? formatEstimatedTimeInMinutes(requestEstimatedTime)
+          : null,
         createdAt: request.CreatedAt,
         updatedAt: request.UpdatedAt
       } : null,
