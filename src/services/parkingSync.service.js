@@ -1152,6 +1152,47 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
   };
 };
 
+/**
+ * Record durable ledger after live park-car / release-parked-car succeeds with Omron syncUuid.
+ * Lets later parking-sync treat the phase as already applied (idempotent ACK path).
+ */
+const recordLiveSyncPhase = async ({
+  syncUuid,
+  phase,
+  operator,
+  palletId = null,
+  carId = null,
+  userId = null,
+  parkingRequestId = null,
+  historyId = null
+}) => {
+  const uuid = typeof syncUuid === 'string' ? syncUuid.trim() : '';
+  if (!uuid) return null;
+  if (phase !== PHASE_PARKING && phase !== PHASE_RETRIEVAL) {
+    throw new Error(`Invalid sync phase: ${phase}`);
+  }
+  if (!operator?.ParkingSystemId || !operator?.ProjectId) {
+    throw new Error('Operator scope required to record sync ledger');
+  }
+
+  return writeLedger(
+    {
+      syncUuid: uuid,
+      historyId,
+      phase,
+      operator,
+      palletId,
+      carId,
+      userId,
+      parkingRequestId
+    },
+    null
+  );
+};
+
 module.exports = {
-  processParkingSync
+  processParkingSync,
+  recordLiveSyncPhase,
+  PHASE_PARKING,
+  PHASE_RETRIEVAL
 };

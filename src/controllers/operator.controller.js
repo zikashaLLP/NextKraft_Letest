@@ -114,11 +114,12 @@ const carIn = async (req, res) => {
 
 const parkCar = async (req, res) => {
   try {
-    const { parkingRequestId, palletId } = req.body;
+    const { parkingRequestId, palletId, syncUuid } = req.body;
     const result = await operatorService.parkCar(
       req.user.id,
-      parseInt(parkingRequestId),
-      parseInt(palletId)
+      parseInt(parkingRequestId, 10),
+      parseInt(palletId, 10),
+      syncUuid
     );
 
     return successResponse(res, result, 'Car parked successfully');
@@ -291,9 +292,13 @@ const updateParkingSystemStatus = async (req, res) => {
 const releaseParkedCar = async (req, res) => {
   try {
     const operatorUserId = req.user.id; // Get operator userId from authenticated session
-    const { requestId } = req.body;
+    const { requestId, syncUuid } = req.body;
 
-    const result = await operatorService.releaseParkedCar(operatorUserId, parseInt(requestId, 10));
+    const result = await operatorService.releaseParkedCar(
+      operatorUserId,
+      parseInt(requestId, 10),
+      syncUuid
+    );
 
     return successResponse(res, result, 'Car released successfully');
   } catch (error) {

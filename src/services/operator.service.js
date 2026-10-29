@@ -3,10 +3,17 @@ const crypto = require('crypto');
 const { sequelize } = require('../config/database');
 const { PARKING_SYSTEM_STATUS_VALUES } = require('../constants/parkingSystemStatus');
 const notificationService = require('./notification.service');
+const parkingSyncService = require('./parkingSync.service');
 const { User, Operator, Project, ParkingSystem, PalletAllotment, Customer, Car, Request, RequestQueue, ParkingRequest } = require('../models/associations');
 const websocketService = require('./websocket.service');
 const { calculateTowerReleaseEstimatedTime } = require('../utils/towerTiming');
 const { formatEstimatedTimeInMinutes } = require('../utils/timeFormat');
+
+const normalizeOptionalSyncUuid = (value) => {
+  if (value == null) return null;
+  const uuid = String(value).trim();
+  return uuid.length > 0 ? uuid : null;
+};
 
 // Helper function to get IST time
 const getISTTime = () => {
@@ -808,10 +815,11 @@ const carIn = async (operatorUserId, floor, floorColumn, parkingRequestId = null
 };
 
 // Assign pallet (UserId, CarId, Assigned; CarType not set on pallet), complete parking request, notify pallet_assigned.
-const parkCar = async (operatorUserId, parkingRequestId, palletId) => {
+const parkCar = async (operatorUserId, parkingRequestId, palletId, syncUuid = null) => {
   const operator = await Operator.findOne({
     where: { UserId: operatorUserId }
   });
+  const liveSyncUuid = normalizeOptionalSyncUuid(syncUuid);
 
   if (!operator) {
     throw new Error('Operator profile not found');
@@ -962,10 +970,28 @@ const parkCar = async (operatorUserId, parkingRequestId, palletId) => {
     });
   }
 
+  // Durable ledger so parking-sync can no-op / re-ACK this Omron row after live park.
+  if (liveSyncUuid) {
+    try {
+      await parkingSyncService.recordLiveSyncPhase({
+        syncUuid: liveSyncUuid,
+        phase: parkingSyncService.PHASE_PARKING,
+        operator,
+        palletId: pallet.Id,
+        carId: car.Id,
+        userId: parkingRequest.UserId,
+        parkingRequestId: parkingRequest.Id
+      });
+    } catch (ledgerError) {
+      console.error('[PARK_CAR] Failed to record live sync ledger:', ledgerError.message || ledgerError);
+    }
+  }
+
   return {
     parkingRequestId: parkingRequest.Id,
     palletId: pallet.Id,
-    status: 'Completed'
+    status: 'Completed',
+    syncUuid: liveSyncUuid
   };
 };
 
@@ -2042,7 +2068,9 @@ const updateParkingSystemStatus = async (operatorUserId, status) => {
 };
 
 // Release Parked Car Service — keyed by release Request id (same completion flow as before)
-const releaseParkedCar = async (operatorUserId, requestId) => {
+const releaseParkedCar = async (operatorUserId, requestId, syncUuid = null) => {
+  const liveSyncUuid = normalizeOptionalSyncUuid(syncUuid);
+
   // Step 1: Find operator by userId
   const operator = await Operator.findOne({
     where: { UserId: operatorUserId }
@@ -2238,6 +2266,33 @@ const releaseParkedCar = async (operatorUserId, requestId) => {
     });
   }
 
+  // Durable ledger so parking-sync can no-op / re-ACK this Omron row after live release.
+  if (liveSyncUuid) {
+    try {
+      // Ensure parking phase exists when live park already completed earlier without uuid.
+      await parkingSyncService.recordLiveSyncPhase({
+        syncUuid: liveSyncUuid,
+        phase: parkingSyncService.PHASE_PARKING,
+        operator,
+        palletId,
+        carId: request.CarId,
+        userId: request.UserId,
+        parkingRequestId: null
+      });
+      await parkingSyncService.recordLiveSyncPhase({
+        syncUuid: liveSyncUuid,
+        phase: parkingSyncService.PHASE_RETRIEVAL,
+        operator,
+        palletId,
+        carId: request.CarId,
+        userId: request.UserId,
+        parkingRequestId: null
+      });
+    } catch (ledgerError) {
+      console.error('[RELEASE_PARKED_CAR] Failed to record live sync ledger:', ledgerError.message || ledgerError);
+    }
+  }
+
   return {
     pallet: {
       id: pallet.Id,
@@ -2267,6 +2322,7 @@ const releaseParkedCar = async (operatorUserId, requestId) => {
     } : null,
     timeToCall: timeToCall,
     timeToCallFormatted: timeToCallFormatted,
+    syncUuid: liveSyncUuid,
     message: 'Car released successfully. Request completed, logged to history, and removed from active requests. Pallet has been released.'
   };
 };

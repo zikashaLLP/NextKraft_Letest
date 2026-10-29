@@ -964,6 +964,10 @@ router.post('/car-in', authorize('operator'), validateCarIn, operatorController.
  *               palletId:
  *                 type: integer
  *                 minimum: 1
+ *               syncUuid:
+ *                 type: string
+ *                 maxLength: 64
+ *                 description: Optional Omron CarAllotHistory SyncUuid for durable ledger + live ACK
  *     responses:
  *       200:
  *         description: Parking completed
@@ -984,6 +988,9 @@ router.post('/car-in', authorize('operator'), validateCarIn, operatorController.
  *                     status:
  *                       type: string
  *                       example: Completed
+ *                     syncUuid:
+ *                       type: string
+ *                       nullable: true
  */
 router.post('/park-car', authorize('operator'), validateParkCar, operatorController.parkCar);
 
@@ -2032,6 +2039,10 @@ router.put('/parking-system/status', authorize('operator'), validateUpdateParkin
  *                 minimum: 1
  *                 description: Active release request id (same as returned by car-out)
  *                 example: 456
+ *               syncUuid:
+ *                 type: string
+ *                 maxLength: 64
+ *                 description: Optional Omron CarAllotHistory SyncUuid for durable ledger + live ACK
  *     responses:
  *       200:
  *         description: Car released successfully
@@ -2047,6 +2058,9 @@ router.put('/parking-system/status', authorize('operator'), validateUpdateParkin
  *                 data:
  *                   type: object
  *                   properties:
+ *                     syncUuid:
+ *                       type: string
+ *                       nullable: true
  *                     pallet:
  *                       type: object
  *                       properties:

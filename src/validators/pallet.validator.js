@@ -68,6 +68,13 @@ const validateParkCar = [
     .withMessage('Pallet ID is required')
     .isInt({ min: 1 })
     .withMessage('Pallet ID must be a valid integer'),
+  body('syncUuid')
+    .optional({ nullable: true })
+    .isString()
+    .withMessage('syncUuid must be a string')
+    .trim()
+    .isLength({ min: 1, max: 64 })
+    .withMessage('syncUuid must be 1-64 characters'),
 
   handleValidationErrors
 ];
@@ -126,7 +133,14 @@ const validateReleaseParkedCar = [
     .withMessage('requestId is required')
     .isInt({ min: 1 })
     .withMessage('requestId must be a valid integer'),
-  
+  body('syncUuid')
+    .optional({ nullable: true })
+    .isString()
+    .withMessage('syncUuid must be a string')
+    .trim()
+    .isLength({ min: 1, max: 64 })
+    .withMessage('syncUuid must be 1-64 characters'),
+
   handleValidationErrors
 ];
 
