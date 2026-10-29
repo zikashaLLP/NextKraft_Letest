@@ -1584,6 +1584,34 @@ const updateCustomerStatus = async (operatorUserId, customerId, status) => {
   // Reload customer to get updated values
   await customer.reload();
 
+  const statusPayload = {
+    customerId: customer.Id,
+    userId: customer.UserId,
+    status: customer.Status,
+    approvedBy: customer.ApprovedBy,
+    approvedAt: customer.ApprovedAt,
+    updatedAt: customer.UpdatedAt
+  };
+
+  // Live + push so the customer app can refresh profile without re-login
+  try {
+    websocketService.emitToUser(customer.UserId, 'customer_status_changed', statusPayload);
+
+    if (status === 'Approved') {
+      await notificationService.notifyCustomerApproved(customer.UserId, {
+        body: 'Your account has been approved. You can use the parking app now.',
+        data: statusPayload
+      });
+    } else if (status === 'Rejected') {
+      await notificationService.notifyCustomerRejected(customer.UserId, {
+        body: 'Your account verification was rejected. Please contact the operator.',
+        data: statusPayload
+      });
+    }
+  } catch (notifyError) {
+    console.error('[OPERATOR] Failed to notify customer of status change:', notifyError);
+  }
+
   return {
     id: customer.Id,
     userId: customer.UserId,

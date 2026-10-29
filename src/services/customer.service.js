@@ -338,71 +338,16 @@ const getCarList = async (userId) => {
     }
   });
 
-  // Helper function to calculate estimated time (same logic as requestCarRelease)
-  const calculateEstimatedTime = (palletAllotment, parkingSystem) => {
-    if (!palletAllotment || !parkingSystem) {
-      return null;
-    }
-
-    let estimatedTime = 0;
-
-    if (parkingSystem.Type === 'Tower') {
-      // Customer pending estimate: ground, no pallet on lift → target → ground
-      estimatedTime = calculateTowerReleaseEstimatedTime({
-        targetFloor: palletAllotment.Level,
-        currentFloor: 0,
-        palletFloor: 0,
-        hasPalletOnLift: false,
-      });
-    } else if (parkingSystem.Type === 'Puzzle') {
-      // For Puzzle: Calculate based on pallet location
-      if (palletAllotment.Level !== null && palletAllotment.Level !== undefined && palletAllotment.LevelBelowGround === null) {
-        // Pallet has Level and Column (above ground)
-        // Time = (Level * TimePerLevel) + HorizontalMoveTime + BufferTime
-        // HorizontalMoveTime is NOT applicable for Level 1
-        estimatedTime = (palletAllotment.Level * parkingSystem.TimeForEachLevel) + 
-                       (palletAllotment.Level > 1 ? parkingSystem.TimeForHorizontalMove : 0) + 
-                       (parkingSystem.BufferTime || 0);
-      } else if (palletAllotment.LevelBelowGround !== null && palletAllotment.LevelBelowGround !== undefined) {
-        // Pallet has LevelBelowGround and Column (below ground)
-        if (palletAllotment.LevelBelowGround === 1) {
-          // LevelBelowGround 1: Only (LevelBelowGround * TimePerLevel) + BufferTime
-          estimatedTime = (palletAllotment.LevelBelowGround * parkingSystem.TimeForEachLevel) + (parkingSystem.BufferTime || 0);
-        } else {
-          // LevelBelowGround > 1: (LevelBelowGround * TimePerLevel) + ((LevelBelowGround * TimePerLevel) + HorizontalMoveTime + BufferTime)
-          estimatedTime = (palletAllotment.LevelBelowGround * parkingSystem.TimeForEachLevel) + 
-                         ((palletAllotment.LevelBelowGround * parkingSystem.TimeForEachLevel) + 
-                          parkingSystem.TimeForHorizontalMove + 
-                          (parkingSystem.BufferTime || 0));
-        }
-      } else {
-        // Invalid pallet location information
-        return null;
-      }
-    } else {
-      // Invalid parking system type
-      return null;
-    }
-
-    return estimatedTime;
-  };
-
   // Map cars with their associated data
   return cars.map(car => {
     const request = requestsMap.get(car.Id) || null;
     const parkingRequest = parkingRequestsMap.get(car.Id) || null;
     const pallet = palletsMap.get(car.Id) || null;
 
-    // Pending/Queued: fresh mechanical estimate. Accepted+: keep stored ETA from accept (for countdown).
-    let calculatedEstimatedTime = null;
-    const isAcceptedOrLater =
-      request &&
-      (request.Status === 'Accepted' || request.Status === 'Completed' || request.Status === 'Cancelled');
-    if (request && !isAcceptedOrLater && request.palletAllotment && request.parkingSystem) {
-      calculatedEstimatedTime = calculateEstimatedTime(request.palletAllotment, request.parkingSystem);
-    }
-    const requestEstimatedTime =
-      calculatedEstimatedTime !== null ? calculatedEstimatedTime : request?.EstimatedTime;
+    // Pending/Queued: use stored EstimatedTime (queue-inclusive total from create).
+    // Do not recalculate without queue — that made every request look the same.
+    // Accepted+: stored ETA is live accept time for countdown.
+    const requestEstimatedTime = request?.EstimatedTime ?? null;
 
     return {
       id: car.Id,
@@ -981,11 +926,13 @@ const requestCarRelease = async (userId, palletId) => {
       .filter((level) => level != null && level !== undefined)
       .map((level) => Number(level));
     const towerEstimate = calculateCustomerTowerReleaseQueueEstimate(pallet.Level, floors);
-    estimatedTime = towerEstimate.estimatedTime;
+    // Persist queue-inclusive ETA so Pending UI/timer matches totalEstimatedTime.
+    // On operator Accept, EstimatedTime is overwritten with live PLC ETA for countdown.
+    estimatedTime = towerEstimate.totalEstimatedTime;
     totalEstimatedTime = towerEstimate.totalEstimatedTime;
     waitingNumber = towerEstimate.waitingNumber;
-    if (request.EstimatedTime !== estimatedTime) {
-      await request.update({ EstimatedTime: estimatedTime });
+    if (request.EstimatedTime !== totalEstimatedTime) {
+      await request.update({ EstimatedTime: totalEstimatedTime });
     }
   }
 
@@ -1146,8 +1093,9 @@ const requestCarRelease = async (userId, palletId) => {
         carNumber: request.car.CarNumber
       } : null,
       status: request.Status,
-      estimatedTime: estimatedTime,
-      estimatedTimeFormatted: formatEstimatedTimeInMinutes(estimatedTime),
+      // estimatedTime === totalEstimatedTime while Pending (queue-inclusive, stored on Request)
+      estimatedTime: totalEstimatedTime,
+      estimatedTimeFormatted: formatEstimatedTimeInMinutes(totalEstimatedTime),
       totalEstimatedTime: totalEstimatedTime,
       totalEstimatedTimeFormatted: formatEstimatedTimeInMinutes(totalEstimatedTime),
       waitingNumber: waitingNumber,

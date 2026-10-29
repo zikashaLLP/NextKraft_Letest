@@ -19,6 +19,9 @@ const NOTIFICATION_TYPES = {
   PALLET_ASSIGNED: 'pallet_assigned',
   PARKING_REQUEST_STATUS_UPDATE: 'parking_request_status_update',
   REQUEST_STATUS_UPDATE: 'request_status_update',
+  CUSTOMER_APPROVED: 'customer_approved',
+  CUSTOMER_REJECTED: 'customer_rejected',
+  CUSTOMER_STATUS_CHANGED: 'customer_status_changed',
   GENERAL: 'general'
 };
 
@@ -271,6 +274,24 @@ const notifyCarReleased = (userId, payload) =>
     data: payload.data || {}
   });
 
+const notifyCustomerApproved = (userId, payload) =>
+  sendToUser({
+    userId,
+    title: 'Account Approved',
+    body: payload.body || 'Your account has been approved. You can use the parking app now.',
+    type: NOTIFICATION_TYPES.CUSTOMER_APPROVED,
+    data: payload.data || {}
+  });
+
+const notifyCustomerRejected = (userId, payload) =>
+  sendToUser({
+    userId,
+    title: 'Account Not Approved',
+    body: payload.body || 'Your account verification was rejected. Please contact the operator.',
+    type: NOTIFICATION_TYPES.CUSTOMER_REJECTED,
+    data: payload.data || {}
+  });
+
 const listNotificationsForUser = async (userId, { limit = 50, offset = 0 } = {}) => {
   const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 100);
   const safeOffset = Math.max(parseInt(offset, 10) || 0, 0);
@@ -347,6 +368,8 @@ module.exports = {
   notifyReleaseRequestRejected,
   notifyCarParked,
   notifyCarReleased,
+  notifyCustomerApproved,
+  notifyCustomerRejected,
   listNotificationsForUser,
   markNotificationRead,
   markAllNotificationsRead
