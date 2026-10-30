@@ -75,9 +75,77 @@ const logout = async (req, res) => {
   }
 };
 
+const changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    const result = await authService.changePassword(req.user.id, currentPassword, newPassword);
+    return successResponse(res, result, 'Password changed successfully');
+  } catch (error) {
+    console.error('Change password error:', error);
+    const statusCode =
+      error.message === 'User not found'
+        ? 404
+        : error.message === 'Current password is incorrect' ||
+            error.message === 'New password must be different from current password'
+          ? 400
+          : 500;
+    return errorResponse(res, error.message || 'Failed to change password', statusCode);
+  }
+};
+
+const forgotPassword = async (req, res) => {
+  try {
+    const { email, role } = req.body;
+    const result = await authService.forgotPassword(email, role || null);
+    return successResponse(
+      res,
+      result,
+      'If an account exists for this email, a password reset OTP has been sent'
+    );
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    const statusCode =
+      error.message.includes('Multiple accounts found') ||
+      error.message.includes('Please wait')
+        ? 400
+        : error.message === 'Email service is not configured'
+          ? 503
+          : 500;
+    return errorResponse(res, error.message || 'Failed to send password reset OTP', statusCode);
+  }
+};
+
+const verifyForgotPasswordOtp = async (req, res) => {
+  try {
+    const { email, otp, newPassword, role } = req.body;
+    const result = await authService.verifyForgotPasswordOtp({
+      email,
+      otp,
+      newPassword,
+      role: role || null
+    });
+    return successResponse(res, result, 'Password reset successful');
+  } catch (error) {
+    console.error('Verify forgot password OTP error:', error);
+    const statusCode =
+      error.message === 'Invalid email or OTP' ||
+      error.message === 'Invalid or expired OTP'
+        ? 400
+        : error.message.includes('Multiple accounts found')
+          ? 400
+          : error.message === 'User not found'
+            ? 404
+            : 500;
+    return errorResponse(res, error.message || 'Failed to verify OTP', statusCode);
+  }
+};
+
 module.exports = {
   signUp,
   login,
   logout,
+  changePassword,
+  forgotPassword,
+  verifyForgotPasswordOtp,
   getProfileByUserId
 };

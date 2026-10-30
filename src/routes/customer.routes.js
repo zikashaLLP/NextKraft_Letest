@@ -4,8 +4,8 @@ const { authenticate } = require('../middleware/auth.middleware');
 const customerController = require('../controllers/customer.controller');
 const parkingSystemController = require('../controllers/parkingSystem.controller');
 const parkingRequestController = require('../controllers/parkingRequest.controller');
-const { validateCreateCustomer } = require('../validators/customer.validator');
-const { validateCreateCar } = require('../validators/car.validator');
+const { validateCreateCustomer, validateUpdateCustomerProfile } = require('../validators/customer.validator');
+const { validateCreateCar, validateUpdateCar, validateDeleteCar } = require('../validators/car.validator');
 const { validateRequestCarRelease } = require('../validators/pallet.validator');
 
 /**
@@ -25,6 +25,7 @@ const { validateRequestCarRelease } = require('../validators/pallet.validator');
  *               - username
  *               - password
  *               - firstName
+ *               - email
  *             properties:
  *               username:
  *                 type: string
@@ -52,6 +53,7 @@ const { validateRequestCarRelease } = require('../validators/pallet.validator');
  *                 type: string
  *                 format: email
  *                 maxLength: 150
+ *                 description: Required unique email used for login recovery / forgot password
  *                 example: "john.doe@example.com"
  *               mobileNumber:
  *                 type: string
@@ -265,6 +267,107 @@ router.get('/profile', authenticate, customerController.getCustomerProfile);
 
 /**
  * @swagger
+ * /api/customer/profile:
+ *   put:
+ *     summary: Update current customer profile (Authentication required)
+ *     description: >
+ *       Updates editable customer profile fields for the authenticated customer.
+ *       Email is unique across customers and operators. Project/parking assignment and approval status are not editable here.
+ *     tags: [Customer]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             minProperties: 1
+ *             properties:
+ *               firstName:
+ *                 type: string
+ *                 minLength: 1
+ *                 maxLength: 100
+ *                 example: "John"
+ *               lastName:
+ *                 type: string
+ *                 maxLength: 100
+ *                 example: "Doe"
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 maxLength: 150
+ *                 example: "john.doe@example.com"
+ *               mobileNumber:
+ *                 type: string
+ *                 maxLength: 20
+ *                 example: "+919876543210"
+ *               flatNumber:
+ *                 type: string
+ *                 maxLength: 50
+ *                 example: "A-101"
+ *               profession:
+ *                 type: string
+ *                 maxLength: 100
+ *                 example: "Engineer"
+ *     responses:
+ *       200:
+ *         description: Customer profile updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: Customer profile updated successfully
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     user:
+ *                       type: object
+ *                       properties:
+ *                         id:
+ *                           type: integer
+ *                         username:
+ *                           type: string
+ *                         role:
+ *                           type: string
+ *                           example: customer
+ *                     customer:
+ *                       type: object
+ *                       properties:
+ *                         id:
+ *                           type: integer
+ *                         firstName:
+ *                           type: string
+ *                         lastName:
+ *                           type: string
+ *                         email:
+ *                           type: string
+ *                         mobileNumber:
+ *                           type: string
+ *                         flatNumber:
+ *                           type: string
+ *                         profession:
+ *                           type: string
+ *                         status:
+ *                           type: string
+ *                           enum: [Approved, Rejected, Pending]
+ *       400:
+ *         description: Validation error or email already exists
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: Customer profile not found
+ */
+router.put('/profile', authenticate, validateUpdateCustomerProfile, customerController.updateCustomerProfile);
+
+/**
+ * @swagger
  * /api/customer/car:
  *   post:
  *     summary: Add a new car (Customer authentication required)
@@ -333,6 +436,189 @@ router.get('/profile', authenticate, customerController.getCustomerProfile);
  *         description: Unauthorized - Authentication required
  */
 router.post('/car', authenticate, validateCreateCar, customerController.createCar);
+
+/**
+ * @swagger
+ * /api/customer/car/{carId}:
+ *   put:
+ *     summary: Update a car (Customer authentication required)
+ *     description: |
+ *       Updates one or more car fields owned by the authenticated customer:
+ *       `carType`, `carModel`, `carCompany`, `carNumber`.
+ *
+ *       **Blocked (409)** when this car has an **Accepted** parking request or **Accepted** release request.
+ *       Pending / Queued / Completed / Cancelled requests do not block updates.
+ *     tags: [Customer]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: carId
+ *         required: true
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *         description: Car ID belonging to the authenticated customer
+ *         example: 12
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             minProperties: 1
+ *             properties:
+ *               carType:
+ *                 type: string
+ *                 enum: [Sedan, SUV]
+ *                 example: Sedan
+ *               carModel:
+ *                 type: string
+ *                 maxLength: 100
+ *                 example: Civic
+ *               carCompany:
+ *                 type: string
+ *                 maxLength: 100
+ *                 example: Honda
+ *               carNumber:
+ *                 type: string
+ *                 maxLength: 50
+ *                 example: MH-01-AB-1234
+ *           examples:
+ *             updatePlate:
+ *               summary: Update number plate only
+ *               value:
+ *                 carNumber: MH-01-AB-9999
+ *             updateAll:
+ *               summary: Update all editable fields
+ *               value:
+ *                 carType: SUV
+ *                 carModel: Creta
+ *                 carCompany: Hyundai
+ *                 carNumber: MH-12-CD-4567
+ *     responses:
+ *       200:
+ *         description: Car updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: Car updated successfully
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: integer
+ *                       example: 12
+ *                     userId:
+ *                       type: integer
+ *                       example: 5
+ *                     carType:
+ *                       type: string
+ *                       example: Sedan
+ *                     carModel:
+ *                       type: string
+ *                       example: Civic
+ *                     carCompany:
+ *                       type: string
+ *                       example: Honda
+ *                     carNumber:
+ *                       type: string
+ *                       example: MH-01-AB-1234
+ *                     createdAt:
+ *                       type: string
+ *                       format: date-time
+ *                     updatedAt:
+ *                       type: string
+ *                       format: date-time
+ *       400:
+ *         description: Validation error or car number already exists
+ *       401:
+ *         description: Unauthorized - Authentication required
+ *       404:
+ *         description: Car not found for this customer
+ *       409:
+ *         description: Accepted parking or release request exists for this car
+ */
+router.put('/car/:carId', authenticate, validateUpdateCar, customerController.updateCar);
+
+/**
+ * @swagger
+ * /api/customer/car/{carId}:
+ *   delete:
+ *     summary: Delete a car (Customer authentication required)
+ *     description: |
+ *       Deletes a car owned by the authenticated customer.
+ *
+ *       **Blocked (409)** when this car has an **Accepted** parking request or **Accepted** release request.
+ *
+ *       When allowed, also deletes related rows for that car from:
+ *       - `parking_requests`
+ *       - `requests` (release requests)
+ *       - `request_queue` (release request history)
+ *
+ *       Any pallet still assigned to the car is released (`CarId` cleared, status `Released`).
+ *     tags: [Customer]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: carId
+ *         required: true
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *         description: Car ID belonging to the authenticated customer
+ *         example: 12
+ *     responses:
+ *       200:
+ *         description: Car deleted successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: Car deleted successfully
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: integer
+ *                       example: 12
+ *                     deleted:
+ *                       type: boolean
+ *                       example: true
+ *                     deletedParkingRequests:
+ *                       type: integer
+ *                       description: Number of parking_requests rows removed
+ *                       example: 1
+ *                     deletedReleaseRequests:
+ *                       type: integer
+ *                       description: Number of requests rows removed
+ *                       example: 0
+ *                     deletedRequestHistory:
+ *                       type: integer
+ *                       description: Number of request_queue history rows removed
+ *                       example: 2
+ *       401:
+ *         description: Unauthorized - Authentication required
+ *       404:
+ *         description: Car not found for this customer
+ *       409:
+ *         description: Accepted parking or release request exists for this car
+ */
+router.delete('/car/:carId', authenticate, validateDeleteCar, customerController.deleteCar);
 
 /**
  * @swagger

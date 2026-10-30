@@ -13,6 +13,21 @@ const handleValidationErrors = (req, res, next) => {
   next();
 };
 
+const emailRules = (required = false) => {
+  const chain = body('email').trim();
+  if (required) {
+    chain.notEmpty().withMessage('Email is required');
+  } else {
+    chain.optional();
+  }
+  return chain
+    .isEmail()
+    .withMessage('Email must be a valid email address')
+    .isLength({ max: 150 })
+    .withMessage('Email must not exceed 150 characters')
+    .normalizeEmail();
+};
+
 // Create customer validation rules
 const validateCreateCustomer = [
   body('username')
@@ -43,13 +58,7 @@ const validateCreateCustomer = [
     .isLength({ max: 100 })
     .withMessage('Last name must not exceed 100 characters'),
   
-  body('email')
-    .optional()
-    .trim()
-    .isEmail()
-    .withMessage('Email must be a valid email address')
-    .isLength({ max: 150 })
-    .withMessage('Email must not exceed 150 characters'),
+  emailRules(true),
   
   body('mobileNumber')
     .optional()
@@ -90,7 +99,79 @@ const validateCreateCustomer = [
   handleValidationErrors
 ];
 
-module.exports = {
-  validateCreateCustomer
-};
+const validateUpdateCustomerProfile = [
+  body('firstName')
+    .optional()
+    .trim()
+    .notEmpty()
+    .withMessage('First name cannot be empty')
+    .isLength({ min: 1, max: 100 })
+    .withMessage('First name must be between 1 and 100 characters'),
 
+  body('lastName')
+    .optional({ nullable: true })
+    .trim()
+    .isLength({ max: 100 })
+    .withMessage('Last name must not exceed 100 characters'),
+
+  body('email')
+    .optional()
+    .trim()
+    .notEmpty()
+    .withMessage('Email cannot be empty')
+    .isEmail()
+    .withMessage('Email must be a valid email address')
+    .isLength({ max: 150 })
+    .withMessage('Email must not exceed 150 characters')
+    .normalizeEmail(),
+
+  body('mobileNumber')
+    .optional({ nullable: true })
+    .trim()
+    .isLength({ max: 20 })
+    .withMessage('Mobile number must not exceed 20 characters'),
+
+  body('flatNumber')
+    .optional({ nullable: true })
+    .trim()
+    .isLength({ max: 50 })
+    .withMessage('Flat number must not exceed 50 characters'),
+
+  body('profession')
+    .optional({ nullable: true })
+    .trim()
+    .isLength({ max: 100 })
+    .withMessage('Profession must not exceed 100 characters'),
+
+  body().custom((_, { req }) => {
+    const {
+      firstName,
+      lastName,
+      email,
+      mobileNumber,
+      flatNumber,
+      profession
+    } = req.body || {};
+
+    if (
+      firstName === undefined &&
+      lastName === undefined &&
+      email === undefined &&
+      mobileNumber === undefined &&
+      flatNumber === undefined &&
+      profession === undefined
+    ) {
+      throw new Error(
+        'At least one of firstName, lastName, email, mobileNumber, flatNumber, or profession is required'
+      );
+    }
+    return true;
+  }),
+
+  handleValidationErrors
+];
+
+module.exports = {
+  validateCreateCustomer,
+  validateUpdateCustomerProfile
+};

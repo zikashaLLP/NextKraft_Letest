@@ -36,13 +36,17 @@ const errorResponse = (res, message = 'Error', statusCode = 400) => {
  * Creates a JWT token containing userId and role in the payload
  * @param {number} userId - User ID to include in token
  * @param {string} role - User role (admin, operator, customer) to include in token
- * @returns {string} JWT token with payload { userId, role }
+ * @param {object} [options]
+ * @param {string} [options.expiresIn]
+ * @param {object} [options.extraClaims]
+ * @returns {string} JWT token with payload { userId, role, ... }
  */
-const generateToken = (userId, role) => {
+const generateToken = (userId, role, options = {}) => {
+  const { expiresIn = config.jwt.expiresIn, extraClaims = {} } = options;
   return jwt.sign(
-    { userId, role }, // Token payload contains userId and role
+    { userId, role, ...extraClaims },
     config.jwt.secret,
-    { expiresIn: config.jwt.expiresIn }
+    { expiresIn }
   );
 };
 

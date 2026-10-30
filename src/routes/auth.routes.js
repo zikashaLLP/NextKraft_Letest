@@ -2,7 +2,14 @@ const express = require('express');
 const router = express.Router();
 const authController = require('../controllers/auth.controller');
 const { authenticate } = require('../middleware/auth.middleware');
-const { validateSignUp, validateLogin, validateUserProfileQuery } = require('../validators/auth.validator');
+const {
+  validateSignUp,
+  validateLogin,
+  validateUserProfileQuery,
+  validateChangePassword,
+  validateForgotPassword,
+  validateVerifyForgotPasswordOtp
+} = require('../validators/auth.validator');
 
 /**
  * @swagger
@@ -202,6 +209,217 @@ router.get(
   authenticate,
   validateUserProfileQuery,
   authController.getProfileByUserId
+);
+
+/**
+ * @swagger
+ * /api/auth/change-password:
+ *   post:
+ *     summary: Change password for the authenticated user
+ *     description: |
+ *       Changes password for the currently authenticated **customer**, **operator**, or **admin**.
+ *       Requires the current password and a new password (min 6 characters).
+ *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - currentPassword
+ *               - newPassword
+ *             properties:
+ *               currentPassword:
+ *                 type: string
+ *                 format: password
+ *                 minLength: 6
+ *                 example: "oldPassword123"
+ *               newPassword:
+ *                 type: string
+ *                 format: password
+ *                 minLength: 6
+ *                 example: "newPassword123"
+ *     responses:
+ *       200:
+ *         description: Password changed successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: Password changed successfully
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     user:
+ *                       type: object
+ *                       properties:
+ *                         id:
+ *                           type: integer
+ *                         username:
+ *                           type: string
+ *                         role:
+ *                           type: string
+ *                           enum: [admin, operator, customer]
+ *                         updatedAt:
+ *                           type: string
+ *                           format: date-time
+ *       400:
+ *         description: Validation error or current password incorrect
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: User not found
+ */
+router.post('/change-password', authenticate, validateChangePassword, authController.changePassword);
+
+/**
+ * @swagger
+ * /api/auth/forgot-password:
+ *   post:
+ *     summary: Request a 6-digit password reset OTP by email
+ *     description: |
+ *       Looks up a **customer** or **operator** profile by email and emails a 6-digit OTP.
+ *       Optional `role` should be sent when the same email exists on both customer and operator profiles.
+ *       Response is intentionally generic when no account exists (anti-enumeration).
+ *     tags: [Authentication]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 example: "john.doe@example.com"
+ *               role:
+ *                 type: string
+ *                 enum: [customer, operator]
+ *                 description: Required only when email matches both a customer and an operator
+ *                 example: customer
+ *     responses:
+ *       200:
+ *         description: OTP dispatch attempted (generic success message)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     email:
+ *                       type: string
+ *                     role:
+ *                       type: string
+ *                       nullable: true
+ *                     otpSent:
+ *                       type: boolean
+ *                       example: true
+ *                     expiresInMinutes:
+ *                       type: integer
+ *                       example: 10
+ *       400:
+ *         description: Validation error, cooldown active, or ambiguous email/role
+ *       503:
+ *         description: Email service not configured and console OTP logging disabled
+ */
+router.post('/forgot-password', validateForgotPassword, authController.forgotPassword);
+
+/**
+ * @swagger
+ * /api/auth/forgot-password/verify:
+ *   post:
+ *     summary: Verify forgot-password OTP, set new password, return profile + token
+ *     description: |
+ *       Verifies the 6-digit OTP for a customer/operator email, sets `newPassword`,
+ *       and returns the role-specific profile plus a JWT token (same shape family as login + profile).
+ *     tags: [Authentication]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - otp
+ *               - newPassword
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 example: "john.doe@example.com"
+ *               otp:
+ *                 type: string
+ *                 pattern: "^[0-9]{6}$"
+ *                 example: "483920"
+ *               newPassword:
+ *                 type: string
+ *                 format: password
+ *                 minLength: 6
+ *                 example: "newPassword123"
+ *               role:
+ *                 type: string
+ *                 enum: [customer, operator]
+ *                 description: Required only when email matches both roles
+ *                 example: customer
+ *     responses:
+ *       200:
+ *         description: Password reset successful; profile and JWT returned
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: Password reset successful
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     user:
+ *                       type: object
+ *                     customer:
+ *                       type: object
+ *                       description: Present when role is customer
+ *                     operator:
+ *                       type: object
+ *                       description: Present when role is operator
+ *                     token:
+ *                       type: string
+ *                       description: JWT for subsequent authenticated API calls
+ *       400:
+ *         description: Invalid/expired OTP, validation error, or ambiguous email/role
+ *       404:
+ *         description: User not found
+ */
+router.post(
+  '/forgot-password/verify',
+  validateVerifyForgotPasswordOtp,
+  authController.verifyForgotPasswordOtp
 );
 
 module.exports = router;

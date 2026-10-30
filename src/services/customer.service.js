@@ -1,5 +1,18 @@
-const { Op } = require('sequelize');
-const { User, Customer, ParkingSystem, Project, Car, PalletAllotment, Request, Operator, ParkingRequest } = require('../models/associations');
+const { Op, fn, col, where } = require('sequelize');
+const { sequelize } = require('../config/database');
+const {
+  User,
+  Customer,
+  ParkingSystem,
+  Project,
+  Car,
+  PalletAllotment,
+  Request,
+  RequestQueue,
+  Operator,
+  ParkingRequest,
+  CarAllotSyncLedger
+} = require('../models/associations');
 const websocketService = require('./websocket.service');
 const { calculateTowerReleaseEstimatedTime, calculateCustomerTowerReleaseQueueEstimate } = require('../utils/towerTiming');
 const { formatEstimatedTimeInMinutes } = require('../utils/timeFormat');
@@ -17,6 +30,32 @@ const getISTTime = () => {
   return istTime;
 };
 
+const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
+
+const assertEmailAvailable = async (email, excludeCustomerId = null) => {
+  const normalized = normalizeEmail(email);
+  if (!normalized) {
+    throw new Error('Email is required');
+  }
+
+  const emailMatch = where(fn('LOWER', col('Email')), normalized);
+  const customerWhere =
+    excludeCustomerId != null
+      ? { [Op.and]: [emailMatch, { Id: { [Op.ne]: excludeCustomerId } }] }
+      : emailMatch;
+
+  const [existingCustomer, existingOperator] = await Promise.all([
+    Customer.findOne({ where: customerWhere }),
+    Operator.findOne({ where: emailMatch })
+  ]);
+
+  if (existingCustomer || existingOperator) {
+    throw new Error('Email already exists');
+  }
+
+  return normalized;
+};
+
 // Create Customer Service
 const createCustomer = async (customerData) => {
   // Step 1: Create user first
@@ -26,6 +65,11 @@ const createCustomer = async (customerData) => {
   if (existingUser) {
     throw new Error('Username already exists');
   }
+
+  if (!customerData.Email) {
+    throw new Error('Email is required');
+  }
+  const email = await assertEmailAvailable(customerData.Email);
 
   // Create new user with customer role
   const user = await User.create({
@@ -74,7 +118,7 @@ const createCustomer = async (customerData) => {
     UserId: userId,
     FirstName: customerData.FirstName,
     LastName: customerData.LastName,
-    Email: customerData.Email,
+    Email: email,
     MobileNumber: customerData.MobileNumber,
     ParkingSystemId: customerData.ParkingSystemId,
     ProjectId: projectId,
@@ -143,44 +187,179 @@ const getCustomerProfile = async (userId) => {
     throw new Error('Customer profile not found');
   }
 
-  return {
-    user: {
-      id: customer.user.Id,
-      username: customer.user.Username,
-      role: customer.user.Role,
-      createdAt: customer.user.CreatedAt,
-      updatedAt: customer.user.UpdatedAt
-    },
-    customer: {
-      id: customer.Id,
-      userId: customer.UserId,
-      firstName: customer.FirstName,
-      lastName: customer.LastName,
-      email: customer.Email,
-      mobileNumber: customer.MobileNumber,
+  return formatCustomerProfile(customer);
+};
+
+const formatCustomerProfile = (customer) => ({
+  user: {
+    id: customer.user.Id,
+    username: customer.user.Username,
+    role: customer.user.Role,
+    createdAt: customer.user.CreatedAt,
+    updatedAt: customer.user.UpdatedAt
+  },
+  customer: {
+    id: customer.Id,
+    userId: customer.UserId,
+    firstName: customer.FirstName,
+    lastName: customer.LastName,
+    email: customer.Email,
+    mobileNumber: customer.MobileNumber,
     projectId: customer.ProjectId,
-      project: customer.project ? {
-        id: customer.project.Id,
-        projectName: customer.project.ProjectName,
-        societyName: customer.project.SocietyName
-      } : null,
-      parkingSystemId: customer.ParkingSystemId,
-      parkingSystem: customer.parkingSystem ? {
-        id: customer.parkingSystem.Id,
-        wingName: customer.parkingSystem.WingName,
-        type: customer.parkingSystem.Type,
-        level: customer.parkingSystem.Level,
-        column: customer.parkingSystem.Column
-      } : null,
+    project: customer.project
+      ? {
+          id: customer.project.Id,
+          projectName: customer.project.ProjectName,
+          societyName: customer.project.SocietyName
+        }
+      : null,
+    parkingSystemId: customer.ParkingSystemId,
+    parkingSystem: customer.parkingSystem
+      ? {
+          id: customer.parkingSystem.Id,
+          wingName: customer.parkingSystem.WingName,
+          type: customer.parkingSystem.Type,
+          level: customer.parkingSystem.Level,
+          column: customer.parkingSystem.Column
+        }
+      : null,
     flatNumber: customer.FlatNumber,
     profession: customer.Profession,
     status: customer.Status,
-      approvedBy: customer.ApprovedBy,
-      approvedAt: customer.ApprovedAt,
+    approvedBy: customer.ApprovedBy,
+    approvedAt: customer.ApprovedAt,
     createdAt: customer.CreatedAt,
     updatedAt: customer.UpdatedAt
+  }
+});
+
+/**
+ * Update authenticated customer profile details.
+ * Editable: firstName, lastName, email, mobileNumber, flatNumber, profession.
+ */
+const updateCustomerProfile = async (userId, profileData) => {
+  const customer = await Customer.findOne({
+    where: { UserId: userId },
+    include: [
+      {
+        model: User,
+        as: 'user',
+        attributes: ['Id', 'Username', 'Role', 'CreatedAt', 'UpdatedAt']
+      },
+      {
+        model: Project,
+        as: 'project',
+        attributes: ['Id', 'ProjectName', 'SocietyName']
+      },
+      {
+        model: ParkingSystem,
+        as: 'parkingSystem',
+        attributes: ['Id', 'WingName', 'Type', 'Level', 'Column']
+      }
+    ]
+  });
+
+  if (!customer) {
+    throw new Error('Customer profile not found');
+  }
+
+  const updates = { UpdatedAt: getISTTime() };
+
+  if (profileData.FirstName !== undefined) updates.FirstName = profileData.FirstName;
+  if (profileData.LastName !== undefined) updates.LastName = profileData.LastName;
+  if (profileData.MobileNumber !== undefined) updates.MobileNumber = profileData.MobileNumber;
+  if (profileData.FlatNumber !== undefined) updates.FlatNumber = profileData.FlatNumber;
+  if (profileData.Profession !== undefined) updates.Profession = profileData.Profession;
+
+  if (profileData.Email !== undefined) {
+    updates.Email = await assertEmailAvailable(profileData.Email, customer.Id);
+  }
+
+  if (
+    profileData.FirstName === undefined &&
+    profileData.LastName === undefined &&
+    profileData.Email === undefined &&
+    profileData.MobileNumber === undefined &&
+    profileData.FlatNumber === undefined &&
+    profileData.Profession === undefined
+  ) {
+    throw new Error('At least one profile field is required to update');
+  }
+
+  await customer.update(updates);
+  await customer.reload({
+    include: [
+      {
+        model: User,
+        as: 'user',
+        attributes: ['Id', 'Username', 'Role', 'CreatedAt', 'UpdatedAt']
+      },
+      {
+        model: Project,
+        as: 'project',
+        attributes: ['Id', 'ProjectName', 'SocietyName']
+      },
+      {
+        model: ParkingSystem,
+        as: 'parkingSystem',
+        attributes: ['Id', 'WingName', 'Type', 'Level', 'Column']
+      }
+    ]
+  });
+
+  return formatCustomerProfile(customer);
+};
+
+const formatCarResponse = (car) => ({
+  id: car.Id,
+  userId: car.UserId,
+  carType: car.CarType,
+  carModel: car.CarModel,
+  carCompany: car.CarCompany,
+  carNumber: car.CarNumber,
+  createdAt: car.CreatedAt,
+  updatedAt: car.UpdatedAt
+});
+
+const findOwnedCarOrThrow = async (userId, carId) => {
+  const car = await Car.findOne({
+    where: {
+      Id: carId,
+      UserId: userId
     }
+  });
+
+  if (!car) {
+    throw new Error('Car not found');
+  }
+
+  return car;
+};
+
+/**
+ * Block edit/delete while a parking or release request for this car is Accepted.
+ */
+const assertNoAcceptedRequestsForCar = async (carId, transaction = null) => {
+  const queryOptions = {
+    where: {
+      CarId: carId,
+      Status: 'Accepted'
+    },
+    ...(transaction ? { transaction } : {})
   };
+
+  const [acceptedParkingRequest, acceptedReleaseRequest] = await Promise.all([
+    ParkingRequest.findOne(queryOptions),
+    Request.findOne(queryOptions)
+  ]);
+
+  if (acceptedParkingRequest) {
+    throw new Error('Cannot modify car while an accepted parking request exists for this car');
+  }
+
+  if (acceptedReleaseRequest) {
+    throw new Error('Cannot modify car while an accepted release request exists for this car');
+  }
 };
 
 // Create Car Service
@@ -205,16 +384,100 @@ const createCar = async (carData) => {
     UpdatedAt: istTime
   });
 
-  return {
-    id: car.Id,
-    userId: car.UserId,
-    carType: car.CarType,
-    carModel: car.CarModel,
-    carCompany: car.CarCompany,
-    carNumber: car.CarNumber,
-    createdAt: car.CreatedAt,
-    updatedAt: car.UpdatedAt
-  };
+  return formatCarResponse(car);
+};
+
+// Update Car Service — blocked when parking/release request is Accepted
+const updateCar = async (userId, carId, carData) => {
+  const car = await findOwnedCarOrThrow(userId, carId);
+  await assertNoAcceptedRequestsForCar(car.Id);
+
+  if (carData.CarNumber != null && carData.CarNumber !== car.CarNumber) {
+    const existing = await Car.findOne({
+      where: {
+        CarNumber: carData.CarNumber,
+        Id: { [Op.ne]: car.Id }
+      }
+    });
+    if (existing) {
+      throw new Error('Car number already exists');
+    }
+  }
+
+  const istTime = getISTTime();
+  const updates = { UpdatedAt: istTime };
+
+  if (carData.CarType !== undefined) updates.CarType = carData.CarType;
+  if (carData.CarModel !== undefined) updates.CarModel = carData.CarModel;
+  if (carData.CarCompany !== undefined) updates.CarCompany = carData.CarCompany;
+  if (carData.CarNumber !== undefined) updates.CarNumber = carData.CarNumber;
+
+  await car.update(updates);
+  await car.reload();
+
+  return formatCarResponse(car);
+};
+
+// Delete Car Service — blocked when parking/release request is Accepted.
+// Also removes related parking/release requests and request history (request_queue).
+const deleteCar = async (userId, carId) => {
+  const car = await findOwnedCarOrThrow(userId, carId);
+
+  const result = await sequelize.transaction(async (transaction) => {
+    await assertNoAcceptedRequestsForCar(car.Id, transaction);
+
+    const parkingDeleted = await ParkingRequest.destroy({
+      where: { CarId: car.Id },
+      transaction
+    });
+
+    const releaseDeleted = await Request.destroy({
+      where: { CarId: car.Id },
+      transaction
+    });
+
+    const historyDeleted = await RequestQueue.destroy({
+      where: { CarId: car.Id },
+      transaction
+    });
+
+    // Release any pallet still pointing at this car
+    const istTime = getISTTime();
+    await PalletAllotment.update(
+      {
+        UserId: 0,
+        CarId: null,
+        CarType: null,
+        Status: 'Released',
+        UpdatedAt: istTime
+      },
+      {
+        where: { CarId: car.Id },
+        transaction
+      }
+    );
+
+    // Clear optional ledger references so FK/orphans are not left behind
+    await CarAllotSyncLedger.update(
+      { CarId: null, UpdatedAt: istTime },
+      {
+        where: { CarId: car.Id },
+        transaction
+      }
+    );
+
+    await car.destroy({ transaction });
+
+    return {
+      id: carId,
+      deleted: true,
+      deletedParkingRequests: parkingDeleted,
+      deletedReleaseRequests: releaseDeleted,
+      deletedRequestHistory: historyDeleted
+    };
+  });
+
+  return result;
 };
 
 // Get Car List Service
@@ -1490,7 +1753,10 @@ const getCustomersWithCarsByProjectIds = async (projectIds) => {
 module.exports = {
   createCustomer,
   getCustomerProfile,
+  updateCustomerProfile,
   createCar,
+  updateCar,
+  deleteCar,
   getCarList,
   getAvailableCarList,
   getCustomerPalletStatus,

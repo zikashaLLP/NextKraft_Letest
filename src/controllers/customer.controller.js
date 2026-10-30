@@ -24,10 +24,15 @@ const createCustomer = async (req, res) => {
     return successResponse(res, result, 'Customer created successfully. Account is pending admin approval.', 201);
   } catch (error) {
     console.error('Create customer error:', error);
-    const statusCode = error.message === 'Username already exists' ? 400 : 
-                       error.message === 'Project not found' ? 404 :
-                       error.message === 'Parking system not found' ? 404 :
-                       error.message.includes('required') ? 400 : 500;
+    const statusCode = error.message === 'Username already exists' ||
+                       error.message === 'Email already exists' ||
+                       error.message === 'Email is required'
+      ? 400
+      : error.message === 'Project not found' || error.message === 'Parking system not found'
+        ? 404
+        : error.message.includes('required')
+          ? 400
+          : 500;
     return errorResponse(res, error.message || 'Failed to create customer', statusCode);
   }
 };
@@ -47,6 +52,48 @@ const getCustomerProfile = async (req, res) => {
   }
 };
 
+// Update Customer Profile Controller
+const updateCustomerProfile = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { firstName, lastName, email, mobileNumber, flatNumber, profession } = req.body;
+
+    const result = await customerService.updateCustomerProfile(userId, {
+      FirstName: firstName,
+      LastName: lastName,
+      Email: email,
+      MobileNumber: mobileNumber,
+      FlatNumber: flatNumber,
+      Profession: profession
+    });
+
+    return successResponse(res, result, 'Customer profile updated successfully');
+  } catch (error) {
+    console.error('Update customer profile error:', error);
+    const statusCode =
+      error.message === 'Customer profile not found'
+        ? 404
+        : error.message === 'Email already exists' ||
+            error.message === 'Email is required' ||
+            error.message === 'At least one profile field is required to update'
+          ? 400
+          : 500;
+    return errorResponse(res, error.message || 'Failed to update customer profile', statusCode);
+  }
+};
+
+const resolveCarMutationStatus = (message) => {
+  if (message === 'Car not found') return 404;
+  if (message === 'Car number already exists') return 400;
+  if (
+    message === 'Cannot modify car while an accepted parking request exists for this car' ||
+    message === 'Cannot modify car while an accepted release request exists for this car'
+  ) {
+    return 409;
+  }
+  return 500;
+};
+
 // Create Car Controller
 const createCar = async (req, res) => {
   try {
@@ -64,7 +111,44 @@ const createCar = async (req, res) => {
     return successResponse(res, result, 'Car added successfully', 201);
   } catch (error) {
     console.error('Create car error:', error);
-    return errorResponse(res, error.message || 'Failed to add car', 500);
+    const statusCode = error.message === 'Car number already exists' ? 400 : 500;
+    return errorResponse(res, error.message || 'Failed to add car', statusCode);
+  }
+};
+
+// Update Car Controller
+const updateCar = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const carId = parseInt(req.params.carId, 10);
+    const { carType, carModel, carCompany, carNumber } = req.body;
+
+    const result = await customerService.updateCar(userId, carId, {
+      CarType: carType,
+      CarModel: carModel,
+      CarCompany: carCompany,
+      CarNumber: carNumber
+    });
+
+    return successResponse(res, result, 'Car updated successfully');
+  } catch (error) {
+    console.error('Update car error:', error);
+    return errorResponse(res, error.message || 'Failed to update car', resolveCarMutationStatus(error.message));
+  }
+};
+
+// Delete Car Controller
+const deleteCar = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const carId = parseInt(req.params.carId, 10);
+
+    const result = await customerService.deleteCar(userId, carId);
+
+    return successResponse(res, result, 'Car deleted successfully');
+  } catch (error) {
+    console.error('Delete car error:', error);
+    return errorResponse(res, error.message || 'Failed to delete car', resolveCarMutationStatus(error.message));
   }
 };
 
@@ -186,7 +270,10 @@ const getCustomersWithCarsByProjectIds = async (req, res) => {
 module.exports = {
   createCustomer,
   getCustomerProfile,
+  updateCustomerProfile,
   createCar,
+  updateCar,
+  deleteCar,
   getCarList,
   getAvailableCarList,
   getCustomerPalletStatus,

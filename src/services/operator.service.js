@@ -160,11 +160,14 @@ const createOperator = async (operatorData) => {
   const istTime = getISTTime();
 
   // Step 6: Create operator record
+  const operatorEmail = operatorData.Email
+    ? String(operatorData.Email).trim().toLowerCase()
+    : null;
   const operator = await Operator.create({
     UserId: userId,
     FirstName: operatorData.FirstName,
     LastName: operatorData.LastName,
-    Email: operatorData.Email,
+    Email: operatorEmail,
     MobileNumber: operatorData.MobileNumber,
     ProjectId: operatorData.ProjectId,
     ParkingSystemId: operatorData.ParkingSystemId,

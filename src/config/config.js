@@ -34,6 +34,23 @@ module.exports = {
     // 2. Set FCM_SERVICE_ACCOUNT_PATH as path to JSON file
     serviceAccountKey: process.env.FCM_SERVICE_ACCOUNT_KEY || null,
     serviceAccountPath: process.env.FCM_SERVICE_ACCOUNT_PATH || null
+  },
+
+  // SMTP / email (forgot-password OTP)
+  email: {
+    host: process.env.SMTP_HOST || '',
+    port: parseInt(process.env.SMTP_PORT || '587', 10),
+    secure: process.env.SMTP_SECURE === 'true',
+    user: process.env.SMTP_USER || '',
+    pass: process.env.SMTP_PASS || '',
+    from: process.env.SMTP_FROM || 'NextKraft <noreply@nextkraft.com>',
+    // When SMTP is not configured, OTP is logged to the server console
+    logOtpWhenUnconfigured: process.env.EMAIL_LOG_OTP !== 'false'
+  },
+
+  passwordReset: {
+    otpTtlMinutes: parseInt(process.env.PASSWORD_RESET_OTP_TTL_MINUTES || '10', 10),
+    resendCooldownSeconds: parseInt(process.env.PASSWORD_RESET_RESEND_COOLDOWN_SECONDS || '60', 10)
   }
 };
 

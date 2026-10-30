@@ -17,7 +17,7 @@ const Customer = sequelize.define('Customer', {
   },
   Email: {
     type: DataTypes.STRING(150),
-    allowNull: true
+    allowNull: false
   },
   MobileNumber: {
     type: DataTypes.STRING(20),

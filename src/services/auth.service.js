@@ -1,4 +1,7 @@
-const { User, Customer, Operator } = require('../models/associations');
+const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
+const { Op, fn, col, where } = require('sequelize');
+const { User, Customer, Operator, PasswordResetOtp } = require('../models/associations');
 const { generateToken } = require('../utils');
 const {
   addFcmToken,
@@ -7,6 +10,72 @@ const {
 } = require('../utils/fcmTokens');
 const customerService = require('./customer.service');
 const operatorService = require('./operator.service');
+const emailService = require('./email.service');
+const config = require('../config/config');
+
+const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
+
+const findAccountByEmail = async (email, role = null) => {
+  const normalized = normalizeEmail(email);
+  const emailWhere = where(fn('LOWER', col('Email')), normalized);
+
+  const loadCustomer = async () => {
+    const customer = await Customer.findOne({
+      where: emailWhere,
+      include: [
+        {
+          model: User,
+          as: 'user',
+          attributes: ['Id', 'Username', 'Role', 'CreatedAt', 'UpdatedAt']
+        }
+      ]
+    });
+    if (!customer || !customer.user || customer.user.Role !== 'customer') {
+      return null;
+    }
+    return {
+      role: 'customer',
+      userId: customer.user.Id,
+      email: customer.Email,
+      profileLoader: () => customerService.getCustomerProfile(customer.user.Id)
+    };
+  };
+
+  const loadOperator = async () => {
+    const operator = await Operator.findOne({
+      where: emailWhere,
+      include: [
+        {
+          model: User,
+          as: 'user',
+          attributes: ['Id', 'Username', 'Role', 'CreatedAt', 'UpdatedAt']
+        }
+      ]
+    });
+    if (!operator || !operator.user || operator.user.Role !== 'operator') {
+      return null;
+    }
+    return {
+      role: 'operator',
+      userId: operator.user.Id,
+      email: operator.Email,
+      profileLoader: () => operatorService.getOperatorProfile(operator.user.Id)
+    };
+  };
+
+  if (role === 'customer') {
+    return loadCustomer();
+  }
+  if (role === 'operator') {
+    return loadOperator();
+  }
+
+  const [customerAccount, operatorAccount] = await Promise.all([loadCustomer(), loadOperator()]);
+  if (customerAccount && operatorAccount) {
+    throw new Error('Multiple accounts found for this email. Please specify role as customer or operator');
+  }
+  return customerAccount || operatorAccount;
+};
 
 // Sign Up Service
 const signUp = async (username, password) => {
@@ -96,6 +165,170 @@ const logout = async (userId, fcmToken = null) => {
 };
 
 /**
+ * Authenticated password change (customer / operator / admin).
+ */
+const changePassword = async (userId, currentPassword, newPassword) => {
+  const user = await User.findByPk(userId);
+  if (!user) {
+    throw new Error('User not found');
+  }
+
+  const isValid = await user.comparePassword(currentPassword);
+  if (!isValid) {
+    throw new Error('Current password is incorrect');
+  }
+
+  if (currentPassword === newPassword) {
+    throw new Error('New password must be different from current password');
+  }
+
+  await user.update({ Password: newPassword });
+
+  return {
+    user: {
+      id: user.Id,
+      username: user.Username,
+      role: user.Role,
+      updatedAt: user.UpdatedAt
+    }
+  };
+};
+
+/**
+ * Request forgot-password OTP for customer or operator by email.
+ */
+const forgotPassword = async (email, role = null) => {
+  const account = await findAccountByEmail(email, role);
+  // Always return a generic success shape to avoid email enumeration,
+  // but still throw for ambiguous multi-account matches above.
+  if (!account) {
+    return {
+      email: normalizeEmail(email),
+      role: role || null,
+      otpSent: true,
+      expiresInMinutes: config.passwordReset.otpTtlMinutes
+    };
+  }
+
+  const cooldownMs = config.passwordReset.resendCooldownSeconds * 1000;
+  const recent = await PasswordResetOtp.findOne({
+    where: {
+      Email: normalizeEmail(account.email),
+      Role: account.role,
+      ConsumedAt: null,
+      CreatedAt: { [Op.gte]: new Date(Date.now() - cooldownMs) }
+    },
+    order: [['CreatedAt', 'DESC']]
+  });
+
+  if (recent) {
+    throw new Error(
+      `Please wait ${config.passwordReset.resendCooldownSeconds} seconds before requesting another OTP`
+    );
+  }
+
+  // Invalidate previous unused OTPs for this account
+  await PasswordResetOtp.update(
+    { ConsumedAt: new Date() },
+    {
+      where: {
+        Email: normalizeEmail(account.email),
+        Role: account.role,
+        ConsumedAt: null
+      }
+    }
+  );
+
+  const otp = String(crypto.randomInt(100000, 1000000));
+  const otpHash = await bcrypt.hash(otp, 10);
+  const expiresAt = new Date(
+    Date.now() + config.passwordReset.otpTtlMinutes * 60 * 1000
+  );
+
+  await PasswordResetOtp.create({
+    Email: normalizeEmail(account.email),
+    Role: account.role,
+    UserId: account.userId,
+    OtpHash: otpHash,
+    ExpiresAt: expiresAt,
+    ConsumedAt: null
+  });
+
+  await emailService.sendPasswordResetOtpEmail({
+    to: account.email,
+    otp,
+    role: account.role,
+    expiresInMinutes: config.passwordReset.otpTtlMinutes
+  });
+
+  return {
+    email: normalizeEmail(account.email),
+    role: account.role,
+    otpSent: true,
+    expiresInMinutes: config.passwordReset.otpTtlMinutes
+  };
+};
+
+/**
+ * Verify forgot-password OTP, set new password, return profile + JWT.
+ */
+const verifyForgotPasswordOtp = async ({ email, otp, newPassword, role = null }) => {
+  const account = await findAccountByEmail(email, role);
+  if (!account) {
+    throw new Error('Invalid email or OTP');
+  }
+
+  const otpRow = await PasswordResetOtp.findOne({
+    where: {
+      Email: normalizeEmail(account.email),
+      Role: account.role,
+      UserId: account.userId,
+      ConsumedAt: null,
+      ExpiresAt: { [Op.gt]: new Date() }
+    },
+    order: [['CreatedAt', 'DESC']]
+  });
+
+  if (!otpRow) {
+    throw new Error('Invalid or expired OTP');
+  }
+
+  const otpMatches = await bcrypt.compare(String(otp).trim(), otpRow.OtpHash);
+  if (!otpMatches) {
+    throw new Error('Invalid or expired OTP');
+  }
+
+  const user = await User.findByPk(account.userId);
+  if (!user) {
+    throw new Error('User not found');
+  }
+
+  await user.update({ Password: newPassword });
+  await otpRow.update({ ConsumedAt: new Date() });
+
+  // Invalidate any other outstanding OTPs for this account
+  await PasswordResetOtp.update(
+    { ConsumedAt: new Date() },
+    {
+      where: {
+        Email: normalizeEmail(account.email),
+        Role: account.role,
+        ConsumedAt: null,
+        Id: { [Op.ne]: otpRow.Id }
+      }
+    }
+  );
+
+  const token = generateToken(user.Id, user.Role);
+  const profile = await account.profileLoader();
+
+  return {
+    ...profile,
+    token
+  };
+};
+
+/**
  * Profile by users.Id — dispatches to customer/operator profile services or returns admin user only.
  * Access: admin (any); operator (self or customers in their project); customer (self only).
  */
@@ -157,7 +390,8 @@ module.exports = {
   signUp,
   login,
   logout,
+  changePassword,
+  forgotPassword,
+  verifyForgotPasswordOtp,
   getProfileByUserId
 };
-
-

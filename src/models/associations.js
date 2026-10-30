@@ -12,6 +12,7 @@ const ErrorLog = require('./ErrorLog');
 const SystemLog = require('./SystemLog');
 const CarAllotSyncLedger = require('./CarAllotSyncLedger');
 const Notification = require('./Notification');
+const PasswordResetOtp = require('./PasswordResetOtp');
 
 // User associations
 User.hasMany(Customer, { foreignKey: 'UserId', as: 'customers' });
@@ -23,6 +24,8 @@ User.hasMany(Notification, { foreignKey: 'UserId', as: 'notifications' });
 User.hasMany(Customer, { foreignKey: 'ApprovedBy', as: 'approvedCustomers' });
 User.hasMany(Operator, { foreignKey: 'ApprovedBy', as: 'approvedOperators' });
 Notification.belongsTo(User, { foreignKey: 'UserId', as: 'user' });
+User.hasMany(PasswordResetOtp, { foreignKey: 'UserId', as: 'passwordResetOtps' });
+PasswordResetOtp.belongsTo(User, { foreignKey: 'UserId', as: 'user' });
 
 // Project associations
 Project.hasMany(Customer, { foreignKey: 'ProjectId', as: 'customers' });
@@ -104,6 +107,7 @@ module.exports = {
   ErrorLog,
   SystemLog,
   CarAllotSyncLedger,
-  Notification
+  Notification,
+  PasswordResetOtp
 };
 

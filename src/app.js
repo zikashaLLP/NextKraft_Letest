@@ -124,6 +124,14 @@ const startServer = async () => {
         console.log('⚠️  Syncing database...');
         await syncDatabase(false); // Use false to avoid dropping tables
       }
+
+      // Ensure OTP table exists even when full SYNC_DB is off
+      try {
+        const { PasswordResetOtp } = require('./models/associations');
+        await PasswordResetOtp.sync();
+      } catch (otpSyncError) {
+        console.warn('⚠️  password_reset_otps sync skipped/failed:', otpSyncError.message);
+      }
     }
     
     // Initialize WebSocket server

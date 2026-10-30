@@ -68,9 +68,80 @@ const validateUserProfileQuery = [
   handleValidationErrors
 ];
 
+const validateChangePassword = [
+  body('currentPassword')
+    .notEmpty()
+    .withMessage('Current password is required')
+    .isLength({ min: 6 })
+    .withMessage('Current password must be at least 6 characters long'),
+
+  body('newPassword')
+    .notEmpty()
+    .withMessage('New password is required')
+    .isLength({ min: 6 })
+    .withMessage('New password must be at least 6 characters long')
+    .custom((value, { req }) => {
+      if (value === req.body.currentPassword) {
+        throw new Error('New password must be different from current password');
+      }
+      return true;
+    }),
+
+  handleValidationErrors
+];
+
+const validateForgotPassword = [
+  body('email')
+    .trim()
+    .notEmpty()
+    .withMessage('Email is required')
+    .isEmail()
+    .withMessage('Email must be a valid email address')
+    .normalizeEmail(),
+
+  body('role')
+    .optional()
+    .isIn(['customer', 'operator'])
+    .withMessage('Role must be either customer or operator'),
+
+  handleValidationErrors
+];
+
+const validateVerifyForgotPasswordOtp = [
+  body('email')
+    .trim()
+    .notEmpty()
+    .withMessage('Email is required')
+    .isEmail()
+    .withMessage('Email must be a valid email address')
+    .normalizeEmail(),
+
+  body('otp')
+    .trim()
+    .notEmpty()
+    .withMessage('OTP is required')
+    .matches(/^\d{6}$/)
+    .withMessage('OTP must be a 6-digit code'),
+
+  body('newPassword')
+    .notEmpty()
+    .withMessage('New password is required')
+    .isLength({ min: 6 })
+    .withMessage('New password must be at least 6 characters long'),
+
+  body('role')
+    .optional()
+    .isIn(['customer', 'operator'])
+    .withMessage('Role must be either customer or operator'),
+
+  handleValidationErrors
+];
+
 module.exports = {
   validateSignUp,
   validateLogin,
-  validateUserProfileQuery
+  validateUserProfileQuery,
+  validateChangePassword,
+  validateForgotPassword,
+  validateVerifyForgotPasswordOtp
 };
-
