@@ -556,14 +556,14 @@ router.put('/car/:carId', authenticate, validateUpdateCar, customerController.up
  *     description: |
  *       Deletes a car owned by the authenticated customer.
  *
- *       **Blocked (409)** when this car has an **Accepted** parking request or **Accepted** release request.
+ *       **Blocked (409)** when:
+ *       - this car has an **Accepted** parking request or **Accepted** release request, or
+ *       - this car is **parked** / still has a pallet with `Status = Assigned`.
  *
  *       When allowed, also deletes related rows for that car from:
  *       - `parking_requests`
  *       - `requests` (release requests)
  *       - `request_queue` (release request history)
- *
- *       Any pallet still assigned to the car is released (`CarId` cleared, status `Released`).
  *     tags: [Customer]
  *     security:
  *       - bearerAuth: []
@@ -616,7 +616,7 @@ router.put('/car/:carId', authenticate, validateUpdateCar, customerController.up
  *       404:
  *         description: Car not found for this customer
  *       409:
- *         description: Accepted parking or release request exists for this car
+ *         description: Car is parked/assigned to a pallet, or Accepted parking/release request exists
  */
 router.delete('/car/:carId', authenticate, validateDeleteCar, customerController.deleteCar);
 

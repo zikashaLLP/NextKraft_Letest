@@ -159,20 +159,23 @@ const updateRequestStatus = async (req, res) => {
   try {
     const { requestId } = req.params;
     const { status } = req.body;
-    const operatorUserId = req.user.id; // Get operator userId from authenticated session
-    
+    const actorUserId = req.user.id;
+    const actorRole = req.user.role;
+
     const result = await operatorService.updateRequestStatus(
-      operatorUserId,
-      parseInt(requestId),
-      status
+      actorUserId,
+      parseInt(requestId, 10),
+      status,
+      actorRole
     );
     
-    return successResponse(res, result, result.message);
+    return successResponse(res, result, result.message || 'Request status updated successfully');
   } catch (error) {
     console.error('Update request status error:', error);
     const statusCode = error.message === 'Operator profile not found' ||
                        error.message === 'Request not found or not assigned to you' ? 404 :
-                       error.message.includes('Invalid status transition') ? 400 : 500;
+                       error.message.includes('Invalid status transition') ||
+                       error.message.startsWith('Customers can only') ? 400 : 500;
     return errorResponse(res, error.message || 'Failed to update request status', statusCode);
   }
 };

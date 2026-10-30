@@ -585,7 +585,11 @@ router.get('/parking-requests', authorize('operator'), parkingRequestController.
  * @swagger
  * /api/operator/parking-requests/{requestId}/status:
  *   put:
- *     summary: Update parking request status (Operator only)
+ *     summary: Update parking request status (Operator or Customer)
+ *     description: |
+ *       Shared status API for parking requests.
+ *       - **Operator**: can transition within project/parking-system scope (Accepted, Queued, Completed, Cancelled, etc.).
+ *       - **Customer**: can only set `Cancelled`, and only while the request is **Pending** and owned by them.
  *     tags: [Operator]
  *     security:
  *       - bearerAuth: []
@@ -607,21 +611,34 @@ router.get('/parking-requests', authorize('operator'), parkingRequestController.
  *             properties:
  *               status:
  *                 type: string
- *                 enum: [Pending, Accepted, Completed, Cancelled]
- *                 example: Accepted
+ *                 enum: [Pending, Accepted, Queued, Completed, Cancelled]
+ *                 example: Cancelled
+ *           examples:
+ *             operatorAccept:
+ *               summary: Operator accepts request
+ *               value:
+ *                 status: Accepted
+ *             customerCancelPending:
+ *               summary: Customer cancels pending request
+ *               value:
+ *                 status: Cancelled
  *     responses:
  *       200:
  *         description: Parking request status updated successfully
  *       400:
- *         description: Invalid status transition
+ *         description: Invalid status transition or customer tried a non-pending cancel
  *       401:
  *         description: Unauthorized
  *       403:
- *         description: Forbidden - Operator access required
+ *         description: Forbidden - Operator or Customer access required
  *       404:
- *         description: Operator or parking request not found
+ *         description: Operator/customer or parking request not found
  */
-router.put('/parking-requests/:requestId/status', authorize('operator'), parkingRequestController.updateParkingRequestStatus);
+router.put(
+  '/parking-requests/:requestId/status',
+  authorize('operator', 'customer'),
+  parkingRequestController.updateParkingRequestStatus
+);
 
 /**
  * @swagger
@@ -1177,8 +1194,11 @@ router.get('/requests', authorize('operator'), operatorController.getOperatorReq
  * @swagger
  * /api/operator/requests/{requestId}/status:
  *   put:
- *     summary: Update request status (Operator only)
- *     description: Updates the status of a request. When status is changed to "Completed", the pallet is automatically released (UserId set to 0, CarId set to null, Status set to 'Released').
+ *     summary: Update release request status (Operator or Customer)
+ *     description: |
+ *       Shared status API for release (retrieve) requests.
+ *       - **Operator**: full transitions in their project/parking-system scope. `Completed` releases the pallet and moves the row to request history.
+ *       - **Customer**: can only set `Cancelled`, and only while the request is **Pending** and owned by them.
  *     tags: [Operator]
  *     security:
  *       - bearerAuth: []
@@ -1204,7 +1224,16 @@ router.get('/requests', authorize('operator'), operatorController.getOperatorReq
  *                 type: string
  *                 enum: [Pending, Accepted, Queued, Completed, Cancelled]
  *                 description: New status for the request
- *                 example: "Completed"
+ *                 example: "Cancelled"
+ *           examples:
+ *             operatorComplete:
+ *               summary: Operator completes release
+ *               value:
+ *                 status: Completed
+ *             customerCancelPending:
+ *               summary: Customer cancels pending release
+ *               value:
+ *                 status: Cancelled
  *     responses:
  *       200:
  *         description: Request status updated successfully
@@ -1358,15 +1387,20 @@ router.get('/requests', authorize('operator'), operatorController.getOperatorReq
  *                     message:
  *                       type: string
  *       400:
- *         description: Validation error or invalid status transition
+ *         description: Validation error, invalid status transition, or customer tried a non-pending cancel
  *       401:
  *         description: Unauthorized
  *       403:
- *         description: Forbidden - Operator access required
+ *         description: Forbidden - Operator or Customer access required
  *       404:
- *         description: Request not found or not assigned to operator
+ *         description: Request not found or not assigned to actor
  */
-router.put('/requests/:requestId/status', authorize('operator'), validateUpdateRequestStatus, operatorController.updateRequestStatus);
+router.put(
+  '/requests/:requestId/status',
+  authorize('operator', 'customer'),
+  validateUpdateRequestStatus,
+  operatorController.updateRequestStatus
+);
 
 /**
  * @swagger

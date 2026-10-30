@@ -362,6 +362,23 @@ const assertNoAcceptedRequestsForCar = async (carId, transaction = null) => {
   }
 };
 
+/**
+ * Block delete while the car is parked / assigned to a pallet.
+ */
+const assertCarNotParked = async (carId, transaction = null) => {
+  const assignedPallet = await PalletAllotment.findOne({
+    where: {
+      CarId: carId,
+      Status: 'Assigned'
+    },
+    ...(transaction ? { transaction } : {})
+  });
+
+  if (assignedPallet) {
+    throw new Error('Cannot delete car while it is parked or assigned to a pallet');
+  }
+};
+
 // Create Car Service
 const createCar = async (carData) => {
   // Enforce unique car number (global uniqueness assumed)
@@ -418,13 +435,14 @@ const updateCar = async (userId, carId, carData) => {
   return formatCarResponse(car);
 };
 
-// Delete Car Service — blocked when parking/release request is Accepted.
+// Delete Car Service — blocked when Accepted request exists or car is parked (Assigned pallet).
 // Also removes related parking/release requests and request history (request_queue).
 const deleteCar = async (userId, carId) => {
   const car = await findOwnedCarOrThrow(userId, carId);
 
   const result = await sequelize.transaction(async (transaction) => {
     await assertNoAcceptedRequestsForCar(car.Id, transaction);
+    await assertCarNotParked(car.Id, transaction);
 
     const parkingDeleted = await ParkingRequest.destroy({
       where: { CarId: car.Id },
@@ -441,23 +459,8 @@ const deleteCar = async (userId, carId) => {
       transaction
     });
 
-    // Release any pallet still pointing at this car
-    const istTime = getISTTime();
-    await PalletAllotment.update(
-      {
-        UserId: 0,
-        CarId: null,
-        CarType: null,
-        Status: 'Released',
-        UpdatedAt: istTime
-      },
-      {
-        where: { CarId: car.Id },
-        transaction
-      }
-    );
-
     // Clear optional ledger references so FK/orphans are not left behind
+    const istTime = getISTTime();
     await CarAllotSyncLedger.update(
       { CarId: null, UpdatedAt: istTime },
       {

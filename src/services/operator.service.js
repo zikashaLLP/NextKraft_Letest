@@ -1146,58 +1146,100 @@ const getOperatorRequests = async (operatorUserId) => {
   }));
 };
 
-// Update Request Status Service
-const updateRequestStatus = async (operatorUserId, requestId, newStatus) => {
-  // Step 1: Find operator by userId
-  const operator = await Operator.findOne({
-    where: { UserId: operatorUserId }
-  });
+/**
+ * Update release request status.
+ * - operator: existing transitions within their project + parking system
+ * - customer: only Cancelled, and only while status is Pending, on own request
+ */
+const updateRequestStatus = async (actorUserId, requestId, newStatus, actorRole = 'operator') => {
+  let request;
+  let cancelledByCustomer = false;
 
-  if (!operator) {
-    throw new Error('Operator profile not found');
-  }
+  if (actorRole === 'customer') {
+    if (newStatus !== 'Cancelled') {
+      throw new Error('Customers can only cancel a pending release request');
+    }
 
-  // Step 2: Validate operator has project and parking system assigned
-  if (!operator.ProjectId || !operator.ParkingSystemId) {
-    throw new Error('Operator is not assigned to a project and parking system');
-  }
-
-  // Step 3: Find the request and validate it belongs to operator's project and parking system
-  const request = await Request.findOne({
-    where: {
-      Id: requestId,
-      ProjectId: operator.ProjectId,
-      ParkingSystemId: operator.ParkingSystemId
-    },
-    include: [
-      {
-        model: PalletAllotment,
-        as: 'palletAllotment',
-        attributes: ['Id', 'UserId', 'CarId', 'Status', 'Level', 'Column', 'UserGivenPalletNumber']
+    request = await Request.findOne({
+      where: {
+        Id: requestId,
+        UserId: actorUserId
       },
-      {
-        model: User,
-        as: 'user',
-        attributes: ['Id', 'Username', 'Role']
-      }
-    ]
-  });
+      include: [
+        {
+          model: PalletAllotment,
+          as: 'palletAllotment',
+          attributes: ['Id', 'UserId', 'CarId', 'Status', 'Level', 'Column', 'UserGivenPalletNumber']
+        },
+        {
+          model: User,
+          as: 'user',
+          attributes: ['Id', 'Username', 'Role']
+        }
+      ]
+    });
 
-  if (!request) {
-    throw new Error('Request not found or not assigned to you');
-  }
+    if (!request) {
+      throw new Error('Request not found or not assigned to you');
+    }
 
-  // Step 3: Validate status transition
-  const validTransitions = {
-    'Pending': ['Accepted', 'Queued', 'Cancelled'],
-    'Accepted': ['Queued', 'Completed', 'Cancelled'],
-    'Queued': ['Completed', 'Cancelled'],
-    'Completed': [], // Cannot change from Completed
-    'Cancelled': [] // Cannot change from Cancelled
-  };
+    if (request.Status !== 'Pending') {
+      throw new Error('Customers can only cancel a release request while it is Pending');
+    }
 
-  if (!validTransitions[request.Status] || !validTransitions[request.Status].includes(newStatus)) {
-    throw new Error(`Invalid status transition from ${request.Status} to ${newStatus}`);
+    cancelledByCustomer = true;
+  } else {
+    // Step 1: Find operator by userId
+    const operator = await Operator.findOne({
+      where: { UserId: actorUserId }
+    });
+
+    if (!operator) {
+      throw new Error('Operator profile not found');
+    }
+
+    // Step 2: Validate operator has project and parking system assigned
+    if (!operator.ProjectId || !operator.ParkingSystemId) {
+      throw new Error('Operator is not assigned to a project and parking system');
+    }
+
+    // Step 3: Find the request and validate it belongs to operator's project and parking system
+    request = await Request.findOne({
+      where: {
+        Id: requestId,
+        ProjectId: operator.ProjectId,
+        ParkingSystemId: operator.ParkingSystemId
+      },
+      include: [
+        {
+          model: PalletAllotment,
+          as: 'palletAllotment',
+          attributes: ['Id', 'UserId', 'CarId', 'Status', 'Level', 'Column', 'UserGivenPalletNumber']
+        },
+        {
+          model: User,
+          as: 'user',
+          attributes: ['Id', 'Username', 'Role']
+        }
+      ]
+    });
+
+    if (!request) {
+      throw new Error('Request not found or not assigned to you');
+    }
+
+    // Step 3: Validate status transition
+    const validTransitions = {
+      'Pending': ['Accepted', 'Queued', 'Cancelled'],
+      'Accepted': ['Queued', 'Completed', 'Cancelled'],
+      'Queued': ['Completed', 'Cancelled'],
+      'Completed': [], // Cannot change from Completed
+      'Cancelled': [] // Cannot change from Cancelled
+    };
+
+    if (!validTransitions[request.Status] || !validTransitions[request.Status].includes(newStatus)) {
+      throw new Error(`Invalid status transition from ${request.Status} to ${newStatus}`);
+    }
   }
 
   // Step 4: Update request status
@@ -1294,12 +1336,52 @@ const updateRequestStatus = async (operatorUserId, requestId, newStatus) => {
     ]
   });
 
-  // Send notification to customer when operator changes request status
-  if (request.user) {
-    const statusData = {
-      requestId: requestId.toString(),
-      status: newStatus
-    };
+  const statusData = {
+    requestId: requestId.toString(),
+    status: newStatus
+  };
+
+  if (cancelledByCustomer) {
+    // Customer cancelled Pending release — notify operator for live refresh
+    const operator = await Operator.findOne({
+      where: {
+        ProjectId: request.ProjectId,
+        ParkingSystemId: request.ParkingSystemId
+      },
+      include: [{ model: User, as: 'user', attributes: ['Id', 'Username', 'Role'] }]
+    });
+
+    if (operator?.user) {
+      await notificationService.sendToUser({
+        userId: operator.user.Id,
+        title: 'Release Request Cancelled',
+        body: 'A customer cancelled their pending release request.',
+        type: notificationService.NOTIFICATION_TYPES.REQUEST_STATUS_UPDATE,
+        data: statusData
+      });
+
+      websocketService.emitToUser(operator.user.Id, 'request_status_changed', {
+        requestId: request.Id,
+        carId: request.CarId,
+        status: newStatus,
+        estimatedTime: request.EstimatedTime,
+        updatedAt: istTime,
+        cancelledBy: 'customer'
+      });
+    }
+
+    if (request.user) {
+      websocketService.emitToUser(request.user.Id, 'request_status_changed', {
+        requestId: request.Id,
+        carId: request.CarId,
+        status: newStatus,
+        estimatedTime: request.EstimatedTime,
+        updatedAt: istTime,
+        cancelledBy: 'customer'
+      });
+    }
+  } else if (request.user) {
+    // Send notification to customer when operator changes request status
     if (newStatus === 'Accepted') {
       await notificationService.notifyReleaseRequestAccepted(request.user.Id, {
         body: 'Your car release request has been accepted by the operator.',

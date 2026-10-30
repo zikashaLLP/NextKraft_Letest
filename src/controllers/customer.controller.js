@@ -87,7 +87,8 @@ const resolveCarMutationStatus = (message) => {
   if (message === 'Car number already exists') return 400;
   if (
     message === 'Cannot modify car while an accepted parking request exists for this car' ||
-    message === 'Cannot modify car while an accepted release request exists for this car'
+    message === 'Cannot modify car while an accepted release request exists for this car' ||
+    message === 'Cannot delete car while it is parked or assigned to a pallet'
   ) {
     return 409;
   }

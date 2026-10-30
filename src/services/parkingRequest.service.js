@@ -247,40 +247,66 @@ const getOperatorParkingRequests = async (operatorUserId) => {
   }));
 };
 
-// Operator updates parking request status
-const updateParkingRequestStatus = async (operatorUserId, parkingRequestId, newStatus) => {
-  const operator = await Operator.findOne({ where: { UserId: operatorUserId } });
-  if (!operator) {
-    throw new Error('Operator profile not found');
-  }
+/**
+ * Update parking request status.
+ * - operator: existing transitions within their project + parking system
+ * - customer: only Cancelled, and only while status is Pending, on own request
+ */
+const updateParkingRequestStatus = async (actorUserId, parkingRequestId, newStatus, actorRole = 'operator') => {
+  let parkingRequest;
 
-  // Validate operator has project and parking system assigned
-  if (!operator.ProjectId || !operator.ParkingSystemId) {
-    throw new Error('Operator is not assigned to a project and parking system');
-  }
-
-  const parkingRequest = await ParkingRequest.findOne({
-    where: {
-      Id: parkingRequestId,
-      ProjectId: operator.ProjectId,
-      ParkingSystemId: operator.ParkingSystemId
+  if (actorRole === 'customer') {
+    if (newStatus !== 'Cancelled') {
+      throw new Error('Customers can only cancel a pending parking request');
     }
-  });
 
-  if (!parkingRequest) {
-    throw new Error('Parking request not found or not assigned to you');
-  }
+    parkingRequest = await ParkingRequest.findOne({
+      where: {
+        Id: parkingRequestId,
+        UserId: actorUserId
+      }
+    });
 
-  const validTransitions = {
-    Pending: ['Accepted', 'Queued','Completed', 'Cancelled'],
-    Accepted: ['Queued', 'Completed', 'Cancelled'],
-    Queued: ['Completed', 'Cancelled'],
-    Completed: [],
-    Cancelled: []
-  };
+    if (!parkingRequest) {
+      throw new Error('Parking request not found or not assigned to you');
+    }
 
-  if (!validTransitions[parkingRequest.Status] || !validTransitions[parkingRequest.Status].includes(newStatus)) {
-    throw new Error(`Invalid status transition from ${parkingRequest.Status} to ${newStatus}`);
+    if (parkingRequest.Status !== 'Pending') {
+      throw new Error('Customers can only cancel a parking request while it is Pending');
+    }
+  } else {
+    const operator = await Operator.findOne({ where: { UserId: actorUserId } });
+    if (!operator) {
+      throw new Error('Operator profile not found');
+    }
+
+    if (!operator.ProjectId || !operator.ParkingSystemId) {
+      throw new Error('Operator is not assigned to a project and parking system');
+    }
+
+    parkingRequest = await ParkingRequest.findOne({
+      where: {
+        Id: parkingRequestId,
+        ProjectId: operator.ProjectId,
+        ParkingSystemId: operator.ParkingSystemId
+      }
+    });
+
+    if (!parkingRequest) {
+      throw new Error('Parking request not found or not assigned to you');
+    }
+
+    const validTransitions = {
+      Pending: ['Accepted', 'Queued', 'Completed', 'Cancelled'],
+      Accepted: ['Queued', 'Completed', 'Cancelled'],
+      Queued: ['Completed', 'Cancelled'],
+      Completed: [],
+      Cancelled: []
+    };
+
+    if (!validTransitions[parkingRequest.Status] || !validTransitions[parkingRequest.Status].includes(newStatus)) {
+      throw new Error(`Invalid status transition from ${parkingRequest.Status} to ${newStatus}`);
+    }
   }
 
   const istTime = getISTTime();
@@ -290,37 +316,72 @@ const updateParkingRequestStatus = async (operatorUserId, parkingRequestId, newS
     UpdatedAt: istTime
   });
 
-  // Notify customer (accepted / rejected / other status)
   const statusData = {
     parkingRequestId: parkingRequest.Id.toString(),
     status: newStatus
   };
-  if (newStatus === 'Accepted') {
-    await notificationService.notifyParkingRequestAccepted(parkingRequest.UserId, {
-      body: 'Your parking request has been accepted by the operator.',
-      data: statusData
-    });
-  } else if (newStatus === 'Cancelled') {
-    await notificationService.notifyParkingRequestRejected(parkingRequest.UserId, {
-      body: 'Your parking request has been rejected.',
-      data: statusData
+
+  if (actorRole === 'operator') {
+    // Notify customer (accepted / rejected / other status)
+    if (newStatus === 'Accepted') {
+      await notificationService.notifyParkingRequestAccepted(parkingRequest.UserId, {
+        body: 'Your parking request has been accepted by the operator.',
+        data: statusData
+      });
+    } else if (newStatus === 'Cancelled') {
+      await notificationService.notifyParkingRequestRejected(parkingRequest.UserId, {
+        body: 'Your parking request has been rejected.',
+        data: statusData
+      });
+    } else {
+      await notificationService.sendToUser({
+        userId: parkingRequest.UserId,
+        title: 'Parking Request Status Updated',
+        body: `Your parking request status is now ${newStatus}`,
+        type: notificationService.NOTIFICATION_TYPES.PARKING_REQUEST_STATUS_UPDATE,
+        data: statusData
+      });
+    }
+
+    websocketService.emitToUser(parkingRequest.UserId, 'parking_request_status_changed', {
+      parkingRequestId: parkingRequest.Id,
+      status: newStatus,
+      updatedAt: istTime
     });
   } else {
-    await notificationService.sendToUser({
-      userId: parkingRequest.UserId,
-      title: 'Parking Request Status Updated',
-      body: `Your parking request status is now ${newStatus}`,
-      type: notificationService.NOTIFICATION_TYPES.PARKING_REQUEST_STATUS_UPDATE,
-      data: statusData
+    // Customer cancelled a Pending request — notify operator for live refresh
+    const operator = await Operator.findOne({
+      where: {
+        ProjectId: parkingRequest.ProjectId,
+        ParkingSystemId: parkingRequest.ParkingSystemId
+      },
+      include: [{ model: User, as: 'user', attributes: ['Id', 'Username', 'Role'] }]
+    });
+
+    if (operator?.user) {
+      await notificationService.sendToUser({
+        userId: operator.user.Id,
+        title: 'Parking Request Cancelled',
+        body: 'A customer cancelled their pending parking request.',
+        type: notificationService.NOTIFICATION_TYPES.PARKING_REQUEST_STATUS_UPDATE,
+        data: statusData
+      });
+
+      websocketService.emitToUser(operator.user.Id, 'parking_request_status_changed', {
+        parkingRequestId: parkingRequest.Id,
+        status: newStatus,
+        updatedAt: istTime,
+        cancelledBy: 'customer'
+      });
+    }
+
+    websocketService.emitToUser(parkingRequest.UserId, 'parking_request_status_changed', {
+      parkingRequestId: parkingRequest.Id,
+      status: newStatus,
+      updatedAt: istTime,
+      cancelledBy: 'customer'
     });
   }
-
-  // Emit WebSocket event for real-time update
-  websocketService.emitToUser(parkingRequest.UserId, 'parking_request_status_changed', {
-    parkingRequestId: parkingRequest.Id,
-    status: newStatus,
-    updatedAt: istTime
-  });
 
   return {
     id: parkingRequest.Id,

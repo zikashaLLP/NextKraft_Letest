@@ -39,17 +39,20 @@ const getOperatorParkingRequests = async (req, res) => {
   }
 };
 
-// Operator: update parking request status
+// Operator or customer: update parking request status
+// Customer may only set Cancelled while the request is Pending.
 const updateParkingRequestStatus = async (req, res) => {
   try {
-    const operatorUserId = req.user.id;
+    const actorUserId = req.user.id;
+    const actorRole = req.user.role;
     const { requestId } = req.params;
     const { status } = req.body;
 
     const result = await parkingRequestService.updateParkingRequestStatus(
-      operatorUserId,
-      parseInt(requestId),
-      status
+      actorUserId,
+      parseInt(requestId, 10),
+      status,
+      actorRole
     );
 
     return successResponse(res, result, 'Parking request status updated successfully');
@@ -57,7 +60,8 @@ const updateParkingRequestStatus = async (req, res) => {
     console.error('Update parking request status error:', error);
     const statusCode = error.message === 'Operator profile not found' ||
                        error.message === 'Parking request not found or not assigned to you' ? 404 :
-                       error.message.startsWith('Invalid status transition') ? 400 : 500;
+                       error.message.startsWith('Invalid status transition') ||
+                       error.message.startsWith('Customers can only') ? 400 : 500;
     return errorResponse(res, error.message || 'Failed to update parking request status', statusCode);
   }
 };
