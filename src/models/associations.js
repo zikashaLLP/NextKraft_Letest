@@ -13,6 +13,7 @@ const SystemLog = require('./SystemLog');
 const CarAllotSyncLedger = require('./CarAllotSyncLedger');
 const Notification = require('./Notification');
 const PasswordResetOtp = require('./PasswordResetOtp');
+const AppConfig = require('./AppConfig');
 
 // User associations
 User.hasMany(Customer, { foreignKey: 'UserId', as: 'customers' });
@@ -108,6 +109,7 @@ module.exports = {
   SystemLog,
   CarAllotSyncLedger,
   Notification,
-  PasswordResetOtp
+  PasswordResetOtp,
+  AppConfig
 };
 

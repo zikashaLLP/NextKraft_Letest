@@ -20,6 +20,7 @@ const adminRoutes = require('./routes/admin.routes');
 const errorLogRoutes = require('./routes/errorLog.routes');
 const systemLogRoutes = require('./routes/systemLog.routes');
 const notificationRoutes = require('./routes/notification.routes');
+const appConfigRoutes = require('./routes/appConfig.routes');
 
 const app = express();
 const server = http.createServer(app);
@@ -81,6 +82,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/error-logs', errorLogRoutes);
 app.use('/api/system-logs', systemLogRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/app-config', appConfigRoutes);
 
 // 404 handler
 app.use((req, res) => {
@@ -125,12 +127,13 @@ const startServer = async () => {
         await syncDatabase(false); // Use false to avoid dropping tables
       }
 
-      // Ensure OTP table exists even when full SYNC_DB is off
+      // Ensure newer tables exist even when full SYNC_DB is off
       try {
-        const { PasswordResetOtp } = require('./models/associations');
+        const { PasswordResetOtp, AppConfig } = require('./models/associations');
         await PasswordResetOtp.sync();
+        await AppConfig.sync();
       } catch (otpSyncError) {
-        console.warn('⚠️  password_reset_otps sync skipped/failed:', otpSyncError.message);
+        console.warn('⚠️  app config / OTP table sync skipped/failed:', otpSyncError.message);
       }
     }
     
