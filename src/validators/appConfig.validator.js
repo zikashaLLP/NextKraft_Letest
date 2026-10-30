@@ -1,4 +1,4 @@
-const { body, validationResult } = require('express-validator');
+const { body, param, validationResult } = require('express-validator');
 
 const handleValidationErrors = (req, res, next) => {
   const errors = validationResult(req);
@@ -11,6 +11,16 @@ const handleValidationErrors = (req, res, next) => {
   }
   next();
 };
+
+const validateAppTypeParam = [
+  param('appType')
+    .trim()
+    .notEmpty()
+    .withMessage('appType is required')
+    .isIn(['customer', 'operator'])
+    .withMessage('appType must be either customer or operator'),
+  handleValidationErrors
+];
 
 const platformVersionRules = (platform) => [
   body(`${platform}`)
@@ -46,6 +56,13 @@ const platformVersionRules = (platform) => [
 ];
 
 const validateUpdateMobileVersion = [
+  param('appType')
+    .trim()
+    .notEmpty()
+    .withMessage('appType is required')
+    .isIn(['customer', 'operator'])
+    .withMessage('appType must be either customer or operator'),
+
   ...platformVersionRules('ios'),
   ...platformVersionRules('android'),
 
@@ -69,5 +86,6 @@ const validateUpdateMobileVersion = [
 ];
 
 module.exports = {
+  validateAppTypeParam,
   validateUpdateMobileVersion
 };
