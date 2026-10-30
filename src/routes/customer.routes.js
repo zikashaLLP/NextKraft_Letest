@@ -73,10 +73,6 @@ const { validateRequestCarRelease } = require('../validators/pallet.validator');
  *                 type: string
  *                 maxLength: 50
  *                 example: "A-101"
- *               profession:
- *                 type: string
- *                 maxLength: 100
- *                 example: "Engineer"
  *     responses:
  *       201:
  *         description: Customer created successfully (Status will be Pending, awaiting admin approval)
@@ -128,8 +124,6 @@ const { validateRequestCarRelease } = require('../validators/pallet.validator');
  *                         parkingSystemId:
  *                           type: integer
  *                         flatNumber:
- *                           type: string
- *                         profession:
  *                           type: string
  *                         status:
  *                           type: string
@@ -240,8 +234,6 @@ router.post('/', validateCreateCustomer, customerController.createCustomer);
  *                               type: integer
  *                         flatNumber:
  *                           type: string
- *                         profession:
- *                           type: string
  *                         status:
  *                           type: string
  *                           enum: [Approved, Rejected, Pending]
@@ -271,7 +263,8 @@ router.get('/profile', authenticate, customerController.getCustomerProfile);
  *   put:
  *     summary: Update current customer profile (Authentication required)
  *     description: >
- *       Updates editable customer profile fields for the authenticated customer.
+ *       Updates editable customer profile fields for the authenticated customer
+ *       (`firstName`, `lastName`, `email`, `mobileNumber`, `flatNumber`).
  *       Email is unique across customers and operators. Project/parking assignment and approval status are not editable here.
  *     tags: [Customer]
  *     security:
@@ -306,10 +299,6 @@ router.get('/profile', authenticate, customerController.getCustomerProfile);
  *                 type: string
  *                 maxLength: 50
  *                 example: "A-101"
- *               profession:
- *                 type: string
- *                 maxLength: 100
- *                 example: "Engineer"
  *     responses:
  *       200:
  *         description: Customer profile updated successfully
@@ -351,8 +340,6 @@ router.get('/profile', authenticate, customerController.getCustomerProfile);
  *                         mobileNumber:
  *                           type: string
  *                         flatNumber:
- *                           type: string
- *                         profession:
  *                           type: string
  *                         status:
  *                           type: string

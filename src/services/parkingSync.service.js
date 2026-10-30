@@ -207,7 +207,6 @@ const findOrCreateDummyCustomer = async (operator, operatorUserId, transaction) 
       ProjectId: operator.ProjectId,
       ParkingSystemId: operator.ParkingSystemId,
       FlatNumber: null,
-      Profession: null,
       Status: 'Approved',
       ApprovedBy: operatorUserId,
       ApprovedAt: istTime,

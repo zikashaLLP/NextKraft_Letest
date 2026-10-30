@@ -60,10 +60,6 @@ const Customer = sequelize.define('Customer', {
     type: DataTypes.STRING(50),
     allowNull: true
   },
-  Profession: {
-    type: DataTypes.STRING(100),
-    allowNull: true
-  },
   Status: {
     type: DataTypes.ENUM('Approved', 'Rejected', 'Pending'),
     defaultValue: 'Pending'

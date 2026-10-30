@@ -123,7 +123,6 @@ const createCustomer = async (customerData) => {
     ParkingSystemId: customerData.ParkingSystemId,
     ProjectId: projectId,
     FlatNumber: customerData.FlatNumber,
-    Profession: customerData.Profession,
     Status: status,
     ApprovedBy: approvedBy,
     ApprovedAt: approvedAt,
@@ -149,7 +148,6 @@ const createCustomer = async (customerData) => {
       projectId: customer.ProjectId,
     parkingSystemId: customer.ParkingSystemId,
       flatNumber: customer.FlatNumber,
-      profession: customer.Profession,
       status: customer.Status,
       approvedBy: customer.ApprovedBy,
       approvedAt: customer.ApprovedAt,
@@ -224,7 +222,6 @@ const formatCustomerProfile = (customer) => ({
         }
       : null,
     flatNumber: customer.FlatNumber,
-    profession: customer.Profession,
     status: customer.Status,
     approvedBy: customer.ApprovedBy,
     approvedAt: customer.ApprovedAt,
@@ -235,7 +232,7 @@ const formatCustomerProfile = (customer) => ({
 
 /**
  * Update authenticated customer profile details.
- * Editable: firstName, lastName, email, mobileNumber, flatNumber, profession.
+ * Editable: firstName, lastName, email, mobileNumber, flatNumber.
  */
 const updateCustomerProfile = async (userId, profileData) => {
   const customer = await Customer.findOne({
@@ -269,7 +266,6 @@ const updateCustomerProfile = async (userId, profileData) => {
   if (profileData.LastName !== undefined) updates.LastName = profileData.LastName;
   if (profileData.MobileNumber !== undefined) updates.MobileNumber = profileData.MobileNumber;
   if (profileData.FlatNumber !== undefined) updates.FlatNumber = profileData.FlatNumber;
-  if (profileData.Profession !== undefined) updates.Profession = profileData.Profession;
 
   if (profileData.Email !== undefined) {
     updates.Email = await assertEmailAvailable(profileData.Email, customer.Id);
@@ -280,8 +276,7 @@ const updateCustomerProfile = async (userId, profileData) => {
     profileData.LastName === undefined &&
     profileData.Email === undefined &&
     profileData.MobileNumber === undefined &&
-    profileData.FlatNumber === undefined &&
-    profileData.Profession === undefined
+    profileData.FlatNumber === undefined
   ) {
     throw new Error('At least one profile field is required to update');
   }
@@ -1612,7 +1607,6 @@ const getCustomerList = async (userId, userRole) => {
       column: customer.parkingSystem.Column
     } : null,
     flatNumber: customer.FlatNumber,
-    profession: customer.Profession,
     status: customer.Status,
     approvedBy: customer.ApprovedBy,
     approvedAt: customer.ApprovedAt,
@@ -1741,7 +1735,6 @@ const getCustomersWithCarsByProjectIds = async (projectIds) => {
       } : null,
       palletAllotmentId: customer.PalletAllotmentId,
       flatNumber: customer.FlatNumber,
-      profession: customer.Profession,
       status: customer.Status,
       approvedBy: customer.ApprovedBy,
       approvedAt: customer.ApprovedAt,

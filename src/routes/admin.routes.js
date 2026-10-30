@@ -342,8 +342,6 @@ router.use(authenticate);
  *                                 type: integer
  *                           flatNumber:
  *                             type: string
- *                           profession:
- *                             type: string
  *                           status:
  *                             type: string
  *                             enum: [Approved, Rejected, Pending]
@@ -485,8 +483,6 @@ router.get('/customers', authorize('admin', 'operator'), customerController.getC
  *                             type: integer
  *                             nullable: true
  *                           flatNumber:
- *                             type: string
- *                           profession:
  *                             type: string
  *                           status:
  *                             type: string

@@ -552,7 +552,6 @@ const carIn = async (operatorUserId, floor, floorColumn, parkingRequestId = null
           ProjectId: operator.ProjectId,
           ParkingSystemId: operator.ParkingSystemId,
           FlatNumber: null,
-          Profession: null,
           Status: 'Approved', // Auto-approve dummy customer
           ApprovedBy: operatorUserId,
           ApprovedAt: istTime,
@@ -1645,7 +1644,6 @@ const getOperatorCustomersWithCars = async (operatorUserId) => {
       projectId: customer.ProjectId,
       parkingSystemId: customer.ParkingSystemId,
       flatNumber: customer.FlatNumber,
-      profession: customer.Profession,
       status: customer.Status,
       approvedBy: customer.ApprovedBy,
       approvedAt: customer.ApprovedAt,

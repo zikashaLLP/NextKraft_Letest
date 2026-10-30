@@ -4,7 +4,7 @@ const { successResponse, errorResponse } = require('../utils');
 // Create Customer Controller (No authentication required)
 const createCustomer = async (req, res) => {
   try {
-    const { username, password, firstName, lastName, email, mobileNumber, projectId, parkingSystemId, flatNumber, profession } = req.body;
+    const { username, password, firstName, lastName, email, mobileNumber, projectId, parkingSystemId, flatNumber } = req.body;
     
     // No admin authentication - customer creates their own account
     // Status will be set to 'Pending' and requires admin approval
@@ -17,8 +17,7 @@ const createCustomer = async (req, res) => {
       MobileNumber: mobileNumber,
       ProjectId: projectId,
       ParkingSystemId: parkingSystemId,
-      FlatNumber: flatNumber,
-      Profession: profession
+      FlatNumber: flatNumber
     });
     
     return successResponse(res, result, 'Customer created successfully. Account is pending admin approval.', 201);
@@ -56,15 +55,14 @@ const getCustomerProfile = async (req, res) => {
 const updateCustomerProfile = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { firstName, lastName, email, mobileNumber, flatNumber, profession } = req.body;
+    const { firstName, lastName, email, mobileNumber, flatNumber } = req.body;
 
     const result = await customerService.updateCustomerProfile(userId, {
       FirstName: firstName,
       LastName: lastName,
       Email: email,
       MobileNumber: mobileNumber,
-      FlatNumber: flatNumber,
-      Profession: profession
+      FlatNumber: flatNumber
     });
 
     return successResponse(res, result, 'Customer profile updated successfully');

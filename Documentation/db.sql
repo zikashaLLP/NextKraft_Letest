@@ -42,7 +42,6 @@ CREATE TABLE customers (
     ProjectId INT NOT NULL,
     ParkingSystemId INT NULL,
     FlatNumber VARCHAR(50),
-    Profession VARCHAR(100),
     Status ENUM('Approved', 'Rejected', 'Pending') DEFAULT 'Pending',
     ApprovedAt DATETIME NULL,
     ApprovedBy INT NULL,

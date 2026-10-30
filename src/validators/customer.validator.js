@@ -82,12 +82,6 @@ const validateCreateCustomer = [
     .isLength({ max: 50 })
     .withMessage('Flat number must not exceed 50 characters'),
   
-  body('profession')
-    .optional()
-    .trim()
-    .isLength({ max: 100 })
-    .withMessage('Profession must not exceed 100 characters'),
-  
   // Custom validation: either projectId or parkingSystemId must be provided
   body().custom((value) => {
     if (!value.projectId && !value.parkingSystemId) {
@@ -137,20 +131,13 @@ const validateUpdateCustomerProfile = [
     .isLength({ max: 50 })
     .withMessage('Flat number must not exceed 50 characters'),
 
-  body('profession')
-    .optional({ nullable: true })
-    .trim()
-    .isLength({ max: 100 })
-    .withMessage('Profession must not exceed 100 characters'),
-
   body().custom((_, { req }) => {
     const {
       firstName,
       lastName,
       email,
       mobileNumber,
-      flatNumber,
-      profession
+      flatNumber
     } = req.body || {};
 
     if (
@@ -158,11 +145,10 @@ const validateUpdateCustomerProfile = [
       lastName === undefined &&
       email === undefined &&
       mobileNumber === undefined &&
-      flatNumber === undefined &&
-      profession === undefined
+      flatNumber === undefined
     ) {
       throw new Error(
-        'At least one of firstName, lastName, email, mobileNumber, flatNumber, or profession is required'
+        'At least one of firstName, lastName, email, mobileNumber, or flatNumber is required'
       );
     }
     return true;

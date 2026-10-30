@@ -514,8 +514,6 @@ router.get('/project', authorize('operator'), operatorController.getOperatorProj
  *                             type: integer
  *                           flatNumber:
  *                             type: string
- *                           profession:
- *                             type: string
  *                           status:
  *                             type: string
  *                             enum: [Approved, Rejected, Pending]
