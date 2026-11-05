@@ -986,7 +986,7 @@ router.post('/car-in', authorize('operator'), validateCarIn, operatorController.
  *       Assigns the pallet slot: UserId, CarId (from parking request car), Status Assigned on PalletDetails.
  *       Does not change PalletDetails.CarType (physical slot type; updated only via PLC bulk sync).
  *       Sets parking request to Completed and sends pallet_assigned notification/WebSocket.
- *       Parking request must be Accepted (after car-in). Requires palletId for the slot being used.
+ *       Parking request may be Pending, Accepted, or Queued (PLC park can complete even if Accept/car-in did not). Requires palletId for the slot being used.
  *     tags: [Operator]
  *     security:
  *       - bearerAuth: []

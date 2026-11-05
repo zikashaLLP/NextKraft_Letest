@@ -908,8 +908,12 @@ const parkCar = async (operatorUserId, parkingRequestId, palletId, syncUuid = nu
     throw new Error('Parking request not found or does not belong to your parking system');
   }
 
-  if (parkingRequest.Status !== 'Accepted') {
-    throw new Error(`Cannot park car for parking request with status: ${parkingRequest.Status}. Expected Accepted.`);
+  // Allow Pending/Queued too — PLC may finish park even if car-in Accept never succeeded.
+  const parkableStatuses = ['Pending', 'Accepted', 'Queued'];
+  if (!parkableStatuses.includes(parkingRequest.Status)) {
+    throw new Error(
+      `Cannot park car for parking request with status: ${parkingRequest.Status}. Expected Pending, Accepted, or Queued.`
+    );
   }
 
   const car = parkingRequest.car;
