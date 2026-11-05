@@ -978,8 +978,8 @@ const getCustomerPalletStatus = async (userId) => {
         afterAcceptTimer: request.AfterAcceptTimer ?? 0,
         acceptedAt: formatDateTimeAsIst(request.AcceptedAt),
         waitingNumber: waitingNumber !== null && waitingNumber !== undefined ? waitingNumber : null,
-        createdAt: request.CreatedAt,
-        updatedAt: request.UpdatedAt
+        createdAt: formatDateTimeAsIst(request.CreatedAt),
+        updatedAt: formatDateTimeAsIst(request.UpdatedAt)
       } : null,
       createdAt: pallet.CreatedAt,
       updatedAt: pallet.UpdatedAt
@@ -1045,8 +1045,8 @@ const getCustomerPalletStatus = async (userId) => {
       carCompany: parkingRequest.car.CarCompany,
       carNumber: parkingRequest.car.CarNumber
     } : null,
-    createdAt: parkingRequest.CreatedAt,
-    updatedAt: parkingRequest.UpdatedAt
+    createdAt: formatDateTimeAsIst(parkingRequest.CreatedAt),
+    updatedAt: formatDateTimeAsIst(parkingRequest.UpdatedAt)
   }));
 
   return {
