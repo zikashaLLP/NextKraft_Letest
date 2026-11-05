@@ -14,7 +14,7 @@ const {
   CarAllotSyncLedger
 } = require('../models/associations');
 const websocketService = require('./websocket.service');
-const { formatEstimatedTimeInMinutes } = require('../utils/timeFormat');
+const { formatEstimatedTimeInMinutes, formatDateTimeAsIst } = require('../utils/timeFormat');
 const requestOrderService = require('./requestOrder.service');
 
 // Helper function to get IST time
@@ -667,10 +667,10 @@ const getCarList = async (userId) => {
         carId: parkingRequest.CarId,
         status: parkingRequest.Status,
         estimatedTime: parkingRequest.EstimatedTime ?? 0,
-        estimatedTimeAt: parkingRequest.EstimatedTimeAt ?? null,
+        estimatedTimeAt: formatDateTimeAsIst(parkingRequest.EstimatedTimeAt),
         estimatedTimeFormatted: formatEstimatedTimeInMinutes(parkingRequest.EstimatedTime ?? 0),
         afterAcceptTimer: parkingRequest.AfterAcceptTimer ?? 0,
-        acceptedAt: parkingRequest.AcceptedAt ?? null,
+        acceptedAt: formatDateTimeAsIst(parkingRequest.AcceptedAt),
         project: parkingRequest.project ? {
           id: parkingRequest.project.Id,
           projectName: parkingRequest.project.ProjectName,
@@ -973,10 +973,10 @@ const getCustomerPalletStatus = async (userId) => {
         } : null,
         status: request.Status,
         estimatedTime: request.EstimatedTime,
-        estimatedTimeAt: request.EstimatedTimeAt ?? null,
+        estimatedTimeAt: formatDateTimeAsIst(request.EstimatedTimeAt),
         estimatedTimeFormatted: formatEstimatedTimeInMinutes(request.EstimatedTime),
         afterAcceptTimer: request.AfterAcceptTimer ?? 0,
-        acceptedAt: request.AcceptedAt ?? null,
+        acceptedAt: formatDateTimeAsIst(request.AcceptedAt),
         waitingNumber: waitingNumber !== null && waitingNumber !== undefined ? waitingNumber : null,
         createdAt: request.CreatedAt,
         updatedAt: request.UpdatedAt
@@ -1022,10 +1022,10 @@ const getCustomerPalletStatus = async (userId) => {
     carId: parkingRequest.CarId,
     status: parkingRequest.Status,
     estimatedTime: parkingRequest.EstimatedTime ?? 0,
-    estimatedTimeAt: parkingRequest.EstimatedTimeAt ?? null,
+    estimatedTimeAt: formatDateTimeAsIst(parkingRequest.EstimatedTimeAt),
     estimatedTimeFormatted: formatEstimatedTimeInMinutes(parkingRequest.EstimatedTime ?? 0),
     afterAcceptTimer: parkingRequest.AfterAcceptTimer ?? 0,
-    acceptedAt: parkingRequest.AcceptedAt ?? null,
+    acceptedAt: formatDateTimeAsIst(parkingRequest.AcceptedAt),
     project: parkingRequest.project ? {
       id: parkingRequest.project.Id,
       projectName: parkingRequest.project.ProjectName,

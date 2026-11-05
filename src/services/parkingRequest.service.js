@@ -3,6 +3,7 @@ const notificationService = require('./notification.service');
 const websocketService = require('./websocket.service');
 const requestOrderService = require('./requestOrder.service');
 const { User, Customer, Operator, Car, ParkingRequest, Project, ParkingSystem, PalletAllotment } = require('../models/associations');
+const { formatDateTimeAsIst, sortByOrderNumberAsc } = require('../utils/timeFormat');
 
 const getISTTime = () => {
   const now = new Date();
@@ -244,7 +245,7 @@ const getOperatorParkingRequests = async (operatorUserId) => {
     requests.map((r) => r.Id)
   );
 
-  return requests.map(req => ({
+  const mapped = requests.map(req => ({
     id: req.Id,
     userId: req.UserId,
     user: req.user ? {
@@ -266,12 +267,14 @@ const getOperatorParkingRequests = async (operatorUserId) => {
     status: req.Status,
     orderNumber: orderMap.get(req.Id) ?? null,
     estimatedTime: req.EstimatedTime ?? 0,
-    estimatedTimeAt: req.EstimatedTimeAt ?? null,
+    estimatedTimeAt: formatDateTimeAsIst(req.EstimatedTimeAt),
     afterAcceptTimer: req.AfterAcceptTimer ?? 0,
-    acceptedAt: req.AcceptedAt ?? null,
-    createdAt: req.CreatedAt,
-    updatedAt: req.UpdatedAt
+    acceptedAt: formatDateTimeAsIst(req.AcceptedAt),
+    createdAt: formatDateTimeAsIst(req.CreatedAt),
+    updatedAt: formatDateTimeAsIst(req.UpdatedAt)
   }));
+
+  return sortByOrderNumberAsc(mapped);
 };
 
 /**
@@ -438,11 +441,11 @@ const updateParkingRequestStatus = async (actorUserId, parkingRequestId, newStat
     carId: parkingRequest.CarId,
     status: parkingRequest.Status,
     estimatedTime: parkingRequest.EstimatedTime ?? 0,
-    estimatedTimeAt: parkingRequest.EstimatedTimeAt ?? null,
+    estimatedTimeAt: formatDateTimeAsIst(parkingRequest.EstimatedTimeAt),
     afterAcceptTimer: parkingRequest.AfterAcceptTimer ?? 0,
-    acceptedAt: parkingRequest.AcceptedAt ?? null,
-    createdAt: parkingRequest.CreatedAt,
-    updatedAt: parkingRequest.UpdatedAt
+    acceptedAt: formatDateTimeAsIst(parkingRequest.AcceptedAt),
+    createdAt: formatDateTimeAsIst(parkingRequest.CreatedAt),
+    updatedAt: formatDateTimeAsIst(parkingRequest.UpdatedAt)
   };
 };
 

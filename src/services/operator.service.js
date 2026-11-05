@@ -9,7 +9,11 @@ const requestOrderService = require('./requestOrder.service');
 const { calculateTowerReleaseEstimatedTime } = require('../utils/towerTiming');
 const { User, Operator, Project, ParkingSystem, PalletAllotment, Customer, Car, Request, RequestQueue, ParkingRequest } = require('../models/associations');
 const websocketService = require('./websocket.service');
-const { formatEstimatedTimeInMinutes } = require('../utils/timeFormat');
+const {
+  formatEstimatedTimeInMinutes,
+  formatDateTimeAsIst,
+  sortByOrderNumberAsc
+} = require('../utils/timeFormat');
 
 const normalizeOptionalSyncUuid = (value) => {
   if (value == null) return null;
@@ -1157,7 +1161,7 @@ const getOperatorRequests = async (operatorUserId) => {
     requests.map((r) => r.Id)
   );
 
-  return requests.map(request => ({
+  const mapped = requests.map(request => ({
     id: request.Id,
     userId: request.UserId,
     customer: request.user ? {
@@ -1221,13 +1225,15 @@ const getOperatorRequests = async (operatorUserId) => {
     status: request.Status,
     orderNumber: orderMap.get(request.Id) ?? null,
     estimatedTime: request.EstimatedTime,
-    estimatedTimeAt: request.EstimatedTimeAt ?? null,
+    estimatedTimeAt: formatDateTimeAsIst(request.EstimatedTimeAt),
     estimatedTimeFormatted: formatEstimatedTimeInMinutes(request.EstimatedTime),
     afterAcceptTimer: request.AfterAcceptTimer ?? 0,
-    acceptedAt: request.AcceptedAt ?? null,
-    createdAt: request.CreatedAt,
-    updatedAt: request.UpdatedAt
+    acceptedAt: formatDateTimeAsIst(request.AcceptedAt),
+    createdAt: formatDateTimeAsIst(request.CreatedAt),
+    updatedAt: formatDateTimeAsIst(request.UpdatedAt)
   }));
+
+  return sortByOrderNumberAsc(mapped);
 };
 
 /**

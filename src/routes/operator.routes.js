@@ -1044,7 +1044,7 @@ router.post('/park-car', authorize('operator'), validateParkCar, operatorControl
  * /api/operator/requests:
  *   get:
  *     summary: Get list of requests assigned to the operator (Operator only)
- *     description: Returns all requests assigned to the authenticated operator, ordered by status (Pending first) and creation date.
+ *     description: Returns release requests for the operator parking system, ordered by RequestOrders orderNumber ascending (then createdAt). Timestamps are IST (+05:30).
  *     tags: [Operator]
  *     security:
  *       - bearerAuth: []
