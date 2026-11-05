@@ -797,6 +797,8 @@ router.post('/generate-pallets', authorize('admin'), parkingSystemController.gen
  *                     floor: { type: integer, minimum: 1, description: Matches Level or LevelBelowGround }
  *                     floorColumn: { type: integer, minimum: 1 }
  *                     PalletNumber: { type: string, description: Stored in UserGivenPalletNumber }
+ *                     CarType: { type: string, enum: [Sedan, SUV], description: Optional slot pallet type from PLC }
+ *                     TT: { type: integer, description: Optional Omron FloorMapping DregisterTTValue (10/11) }
  *               - type: object
  *                 required: [ items ]
  *                 properties:
@@ -810,6 +812,8 @@ router.post('/generate-pallets', authorize('admin'), parkingSystemController.gen
  *                         floor: { type: integer }
  *                         floorColumn: { type: integer }
  *                         PalletNumber: { type: string }
+ *                         CarType: { type: string, enum: [Sedan, SUV] }
+ *                         TT: { type: integer, description: Optional Omron FloorMapping DregisterTTValue }
  *     responses:
  *       200:
  *         description: Result lists updated rows and any rows that could not be matched

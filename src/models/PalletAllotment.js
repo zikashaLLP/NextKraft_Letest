@@ -55,8 +55,18 @@ const PalletAllotment = sequelize.define('PalletAllotment', {
       key: 'Id'
     }
   },
+  // Physical pallet/slot type from PLC sync only (bulk-update-pallet-numbers). Not cleared on park/release.
   CarType: {
     type: DataTypes.ENUM(...CAR_TYPE_VALUES),
+    allowNull: true,
+    defaultValue: null
+  },
+  /**
+   * Slot TT register (Omron FloorMapping DregisterTTValue). Synced on bulk pallet-number sync;
+   * refreshed on park-car / release-parked-car when operator sends live TT. ETA: TT===11 → +45s.
+   */
+  TT: {
+    type: DataTypes.INTEGER,
     allowNull: true,
     defaultValue: null
   },

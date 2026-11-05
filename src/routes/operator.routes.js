@@ -863,8 +863,10 @@ router.get('/pallet-details', authorize('admin', 'operator'), parkingSystemContr
  * @swagger
  * /api/operator/bulk-update-pallet-numbers:
  *   post:
- *     summary: Bulk set user-facing pallet labels (Operator only)
- *     description: Same as POST /api/admin/bulk-update-pallet-numbers; rows must use your assigned parkingSystemId.
+ *     summary: Bulk set user-facing pallet labels and optional CarType (Operator only)
+ *     description: |
+ *       Same as POST /api/admin/bulk-update-pallet-numbers; rows must use your assigned parkingSystemId.
+ *       Optional CarType (Sedan|SUV) updates PalletDetails.CarType for empty-pallet matching / lift analysis.
  *     tags: [Operator]
  *     security:
  *       - bearerAuth: []
@@ -876,6 +878,12 @@ router.get('/pallet-details', authorize('admin', 'operator'), parkingSystemContr
  *             type: array
  *             items:
  *               type: object
+ *               properties:
+ *                 parkingSystemId: { type: integer }
+ *                 floor: { type: integer }
+ *                 floorColumn: { type: integer }
+ *                 PalletNumber: { type: string }
+ *                 CarType: { type: string, enum: [Sedan, SUV] }
  *     responses:
  *       200:
  *         description: Same shape as admin bulk-update (updated / errors)
@@ -886,6 +894,24 @@ router.post(
   validateBulkUpdatePalletNumbers,
   parkingSystemController.bulkUpdateUserGivenPalletNumbers
 );
+
+/**
+ * @swagger
+ * /api/operator/lift-live-analysis:
+ *   get:
+ *     summary: Get lift occupancy analysis for the operator's parking system
+ *     description: |
+ *       One row per parking system. Shows current/next pallet type on the lift and LiftFloor (0 = ground).
+ *     tags: [Operator]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Lift live analysis row
+ *       404:
+ *         description: Operator profile not found
+ */
+router.get('/lift-live-analysis', authorize('operator'), operatorController.getLiftLiveAnalysis);
 
 /**
  * @swagger
@@ -957,7 +983,8 @@ router.post('/car-in', authorize('operator'), validateCarIn, operatorController.
  *   post:
  *     summary: Park car — assign pallet and complete parking request (Operator only)
  *     description: |
- *       Assigns the pallet slot: UserId, CarId (from parking request car), Status Assigned on PalletDetails. CarType on pallet is not set.
+ *       Assigns the pallet slot: UserId, CarId (from parking request car), Status Assigned on PalletDetails.
+ *       Does not change PalletDetails.CarType (physical slot type; updated only via PLC bulk sync).
  *       Sets parking request to Completed and sends pallet_assigned notification/WebSocket.
  *       Parking request must be Accepted (after car-in). Requires palletId for the slot being used.
  *     tags: [Operator]
@@ -983,6 +1010,9 @@ router.post('/car-in', authorize('operator'), validateCarIn, operatorController.
  *                 type: string
  *                 maxLength: 64
  *                 description: Optional Omron CarAllotHistory SyncUuid for durable ledger + live ACK
+ *               tt:
+ *                 type: integer
+ *                 description: Optional live Omron slot TT (DregisterTTValue); updates PalletDetails.TT
  *     responses:
  *       200:
  *         description: Parking completed
@@ -2075,6 +2105,9 @@ router.put('/parking-system/status', authorize('operator'), validateUpdateParkin
  *                 type: string
  *                 maxLength: 64
  *                 description: Optional Omron CarAllotHistory SyncUuid for durable ledger + live ACK
+ *               tt:
+ *                 type: integer
+ *                 description: Optional live Omron slot TT (DregisterTTValue); updates PalletDetails.TT
  *     responses:
  *       200:
  *         description: Car released successfully

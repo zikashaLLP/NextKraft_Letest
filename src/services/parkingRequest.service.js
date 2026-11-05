@@ -1,6 +1,7 @@
 const { Op } = require('sequelize');
 const notificationService = require('./notification.service');
 const websocketService = require('./websocket.service');
+const requestOrderService = require('./requestOrder.service');
 const { User, Customer, Operator, Car, ParkingRequest, Project, ParkingSystem, PalletAllotment } = require('../models/associations');
 
 const getISTTime = () => {
@@ -83,9 +84,24 @@ const createParkingRequest = async (userId, carId) => {
     ParkingSystemId: customer.ParkingSystemId,
     CarId: car.Id,
     Status: 'Pending',
+    EstimatedTime: 0,
+    EstimatedTimeAt: istTime,
     CreatedAt: istTime,
     UpdatedAt: istTime
   });
+
+  try {
+    await requestOrderService.enqueueRequest({
+      projectId: customer.ProjectId,
+      parkingSystemId: customer.ParkingSystemId,
+      requestType: 'Parking',
+      requestId: parkingRequest.Id,
+      position: 'tail'
+    });
+    await parkingRequest.reload();
+  } catch (orderErr) {
+    console.error('[PARKING_REQUEST] RequestOrders enqueue failed:', orderErr.message || orderErr);
+  }
 
   // Reload with associations for detailed response
   await parkingRequest.reload({
@@ -222,6 +238,12 @@ const getOperatorParkingRequests = async (operatorUserId) => {
     order: [['CreatedAt', 'DESC']]
   });
 
+  const orderMap = await requestOrderService.mapOrderNumbersByRequests(
+    operator.ParkingSystemId,
+    'Parking',
+    requests.map((r) => r.Id)
+  );
+
   return requests.map(req => ({
     id: req.Id,
     userId: req.UserId,
@@ -242,6 +264,11 @@ const getOperatorParkingRequests = async (operatorUserId) => {
       carNumber: req.car.CarNumber
     } : null,
     status: req.Status,
+    orderNumber: orderMap.get(req.Id) ?? null,
+    estimatedTime: req.EstimatedTime ?? 0,
+    estimatedTimeAt: req.EstimatedTimeAt ?? null,
+    afterAcceptTimer: req.AfterAcceptTimer ?? 0,
+    acceptedAt: req.AcceptedAt ?? null,
     createdAt: req.CreatedAt,
     updatedAt: req.UpdatedAt
   }));
@@ -315,6 +342,26 @@ const updateParkingRequestStatus = async (actorUserId, parkingRequestId, newStat
     Status: newStatus,
     UpdatedAt: istTime
   });
+
+  try {
+    if (newStatus === 'Accepted') {
+      // No AfterAcceptTimer for parking. Order 1 accept → no reshuffle;
+      // middle accept → promote to 1 and update former ahead jobs' ETAs.
+      await requestOrderService.promoteAcceptedToHead({
+        parkingSystemId: parkingRequest.ParkingSystemId,
+        requestType: 'Parking',
+        requestId: parkingRequest.Id
+      });
+    } else if (newStatus === 'Completed' || newStatus === 'Cancelled') {
+      await requestOrderService.removeRequestAndCompact({
+        parkingSystemId: parkingRequest.ParkingSystemId,
+        requestType: 'Parking',
+        requestId: parkingRequest.Id
+      });
+    }
+  } catch (orderErr) {
+    console.error('[PARKING_REQUEST] RequestOrders status hook failed:', orderErr.message || orderErr);
+  }
 
   const statusData = {
     parkingRequestId: parkingRequest.Id.toString(),
@@ -390,6 +437,10 @@ const updateParkingRequestStatus = async (actorUserId, parkingRequestId, newStat
     parkingSystemId: parkingRequest.ParkingSystemId,
     carId: parkingRequest.CarId,
     status: parkingRequest.Status,
+    estimatedTime: parkingRequest.EstimatedTime ?? 0,
+    estimatedTimeAt: parkingRequest.EstimatedTimeAt ?? null,
+    afterAcceptTimer: parkingRequest.AfterAcceptTimer ?? 0,
+    acceptedAt: parkingRequest.AcceptedAt ?? null,
     createdAt: parkingRequest.CreatedAt,
     updatedAt: parkingRequest.UpdatedAt
   };

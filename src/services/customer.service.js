@@ -14,8 +14,8 @@ const {
   CarAllotSyncLedger
 } = require('../models/associations');
 const websocketService = require('./websocket.service');
-const { calculateTowerReleaseEstimatedTime, calculateCustomerTowerReleaseQueueEstimate } = require('../utils/towerTiming');
 const { formatEstimatedTimeInMinutes } = require('../utils/timeFormat');
+const requestOrderService = require('./requestOrder.service');
 
 // Helper function to get IST time
 const getISTTime = () => {
@@ -666,6 +666,11 @@ const getCarList = async (userId) => {
         parkingSystemId: parkingRequest.ParkingSystemId,
         carId: parkingRequest.CarId,
         status: parkingRequest.Status,
+        estimatedTime: parkingRequest.EstimatedTime ?? 0,
+        estimatedTimeAt: parkingRequest.EstimatedTimeAt ?? null,
+        estimatedTimeFormatted: formatEstimatedTimeInMinutes(parkingRequest.EstimatedTime ?? 0),
+        afterAcceptTimer: parkingRequest.AfterAcceptTimer ?? 0,
+        acceptedAt: parkingRequest.AcceptedAt ?? null,
         project: parkingRequest.project ? {
           id: parkingRequest.project.Id,
           projectName: parkingRequest.project.ProjectName,
@@ -968,7 +973,10 @@ const getCustomerPalletStatus = async (userId) => {
         } : null,
         status: request.Status,
         estimatedTime: request.EstimatedTime,
+        estimatedTimeAt: request.EstimatedTimeAt ?? null,
         estimatedTimeFormatted: formatEstimatedTimeInMinutes(request.EstimatedTime),
+        afterAcceptTimer: request.AfterAcceptTimer ?? 0,
+        acceptedAt: request.AcceptedAt ?? null,
         waitingNumber: waitingNumber !== null && waitingNumber !== undefined ? waitingNumber : null,
         createdAt: request.CreatedAt,
         updatedAt: request.UpdatedAt
@@ -1013,6 +1021,11 @@ const getCustomerPalletStatus = async (userId) => {
     parkingSystemId: parkingRequest.ParkingSystemId,
     carId: parkingRequest.CarId,
     status: parkingRequest.Status,
+    estimatedTime: parkingRequest.EstimatedTime ?? 0,
+    estimatedTimeAt: parkingRequest.EstimatedTimeAt ?? null,
+    estimatedTimeFormatted: formatEstimatedTimeInMinutes(parkingRequest.EstimatedTime ?? 0),
+    afterAcceptTimer: parkingRequest.AfterAcceptTimer ?? 0,
+    acceptedAt: parkingRequest.AcceptedAt ?? null,
     project: parkingRequest.project ? {
       id: parkingRequest.project.Id,
       projectName: parkingRequest.project.ProjectName,
@@ -1107,50 +1120,12 @@ const requestCarRelease = async (userId, palletId) => {
     throw new Error('No operator assigned to this parking system. Please contact administrator');
   }
 
-  // Step 4: Calculate base estimated time (queue wait applied after create for Tower)
-  let estimatedTime = 0;
-  let totalEstimatedTime = 0;
-  let waitingNumber = 0;
-
-  if (pallet.parkingSystem.Type === 'Tower') {
-    // Ground, no pallet on lift → target → ground (queue added in step 5.1)
-    estimatedTime = calculateTowerReleaseEstimatedTime({
-      targetFloor: pallet.Level,
-      currentFloor: 0,
-      palletFloor: 0,
-      hasPalletOnLift: false,
-    });
-    totalEstimatedTime = estimatedTime;
-  } else if (pallet.parkingSystem.Type === 'Puzzle') {
-    // For Puzzle: Calculate based on pallet location
-    if (pallet.Level !== null && pallet.Level !== undefined && pallet.LevelBelowGround === null) {
-      // Pallet has Level and Column (above ground)
-      // Time = (Level * TimePerLevel) + HorizontalMoveTime + BufferTime
-      // HorizontalMoveTime is NOT applicable for Level 1
-      estimatedTime = (pallet.Level * pallet.parkingSystem.TimeForEachLevel) + 
-                     (pallet.Level > 1 ? pallet.parkingSystem.TimeForHorizontalMove : 0) + 
-                     (pallet.parkingSystem.BufferTime || 0);
-    } else if (pallet.LevelBelowGround !== null && pallet.LevelBelowGround !== undefined) {
-      // Pallet has LevelBelowGround and Column (below ground)
-      if (pallet.LevelBelowGround === 1) {
-        // LevelBelowGround 1: Only (LevelBelowGround * TimePerLevel) + BufferTime
-        estimatedTime = (pallet.LevelBelowGround * pallet.parkingSystem.TimeForEachLevel) + (pallet.parkingSystem.BufferTime || 0);
-      } else {
-        // LevelBelowGround > 1: (LevelBelowGround * TimePerLevel) + ((LevelBelowGround * TimePerLevel) + HorizontalMoveTime + BufferTime)
-        estimatedTime = (pallet.LevelBelowGround * pallet.parkingSystem.TimeForEachLevel) + 
-                       ((pallet.LevelBelowGround * pallet.parkingSystem.TimeForEachLevel) + 
-                        pallet.parkingSystem.TimeForHorizontalMove + 
-                        (pallet.parkingSystem.BufferTime || 0));
-      }
-    } else {
-      throw new Error('Pallet location information is invalid');
-    }
-    totalEstimatedTime = estimatedTime;
-  } else {
+  if (!pallet.parkingSystem || !['Tower', 'Puzzle'].includes(pallet.parkingSystem.Type)) {
     throw new Error('Invalid parking system type');
   }
 
-  // Step 5: Create request entry
+  // Step 5: Create request — ETA filled by shared RequestOrders queue
+  const istTime = getISTTime();
   const request = await Request.create({
     UserId: userId,
     PalletAllotmentId: palletId,
@@ -1158,43 +1133,31 @@ const requestCarRelease = async (userId, palletId) => {
     ParkingSystemId: pallet.ParkingSystemId,
     CarId: pallet.CarId,
     Status: 'Pending',
-    EstimatedTime: estimatedTime
+    EstimatedTime: 0,
+    EstimatedTimeAt: istTime,
+    CreatedAt: istTime,
+    UpdatedAt: istTime
   });
 
-  // Step 5.1: Waiting requests ahead — Tower uses avg target floor × count
-  const waitingRequests = await Request.findAll({
-    where: {
-      ProjectId: pallet.ProjectId,
-      ParkingSystemId: pallet.ParkingSystemId,
-      Status: { [Op.in]: ['Pending', 'Queued', 'Accepted'] },
-      CreatedAt: { [Op.lt]: request.CreatedAt },
-      Id: { [Op.ne]: request.Id }
-    },
-    include: [
-      {
-        model: PalletAllotment,
-        as: 'palletAllotment',
-        attributes: ['Id', 'Level']
-      }
-    ]
-  });
+  let estimatedTime = 0;
+  let totalEstimatedTime = 0;
+  let waitingNumber = 0;
 
-  waitingNumber = waitingRequests.length;
-
-  if (pallet.parkingSystem.Type === 'Tower') {
-    const floors = waitingRequests
-      .map((r) => r.palletAllotment?.Level)
-      .filter((level) => level != null && level !== undefined)
-      .map((level) => Number(level));
-    const towerEstimate = calculateCustomerTowerReleaseQueueEstimate(pallet.Level, floors);
-    // Persist queue-inclusive ETA so Pending UI/timer matches totalEstimatedTime.
-    // On operator Accept, EstimatedTime is overwritten with live PLC ETA for countdown.
-    estimatedTime = towerEstimate.totalEstimatedTime;
-    totalEstimatedTime = towerEstimate.totalEstimatedTime;
-    waitingNumber = towerEstimate.waitingNumber;
-    if (request.EstimatedTime !== totalEstimatedTime) {
-      await request.update({ EstimatedTime: totalEstimatedTime });
-    }
+  try {
+    await requestOrderService.enqueueRequest({
+      projectId: pallet.ProjectId,
+      parkingSystemId: pallet.ParkingSystemId,
+      requestType: 'Release',
+      requestId: request.Id,
+      position: 'tail'
+    });
+    await request.reload();
+    estimatedTime = Number(request.EstimatedTime) || 0;
+    totalEstimatedTime = estimatedTime;
+    const queue = await requestOrderService.getQueue(pallet.ParkingSystemId);
+    waitingNumber = Math.max(0, queue.length - 1);
+  } catch (orderErr) {
+    console.error('[REQUEST_CAR_RELEASE] RequestOrders enqueue failed:', orderErr.message || orderErr);
   }
 
   // Step 6: Reload request with associations

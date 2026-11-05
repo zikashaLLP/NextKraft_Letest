@@ -43,6 +43,28 @@ const ParkingRequest = sequelize.define('ParkingRequest', {
     type: DataTypes.ENUM('Pending', 'Accepted', 'Queued', 'Completed', 'Cancelled'),
     defaultValue: 'Pending'
   },
+  /** Queue / pre-accept cumulative ETA (seconds) from last recalculation. */
+  EstimatedTime: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 0
+  },
+  /** When EstimatedTime was anchored. */
+  EstimatedTimeAt: {
+    type: DataTypes.DATE,
+    allowNull: true
+  },
+  /** Post-accept countdown duration (seconds). */
+  AfterAcceptTimer: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 0
+  },
+  /** Accept countdown anchor. */
+  AcceptedAt: {
+    type: DataTypes.DATE,
+    allowNull: true
+  },
   CreatedAt: {
     type: DataTypes.DATE,
     allowNull: false,

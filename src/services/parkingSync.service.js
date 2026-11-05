@@ -17,6 +17,8 @@ const {
 const { CAR_TYPE_VALUES } = require('../utils/constant');
 const notificationService = require('./notification.service');
 const websocketService = require('./websocket.service');
+const liftLiveAnalysisService = require('./liftLiveAnalysis.service');
+const requestOrderService = require('./requestOrder.service');
 
 const PHASE_PARKING = 'parking';
 const PHASE_RETRIEVAL = 'retrieval';
@@ -875,15 +877,11 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
         );
         parkingRequestId = completedPark.parkingRequest?.Id ?? null;
 
+        // Do not touch CarType — slot type is owned by PLC bulk sync only.
         await pallet.update(
           {
             UserId: customer.UserId,
             CarId: car.Id,
-            CarType:
-              car.CarType ||
-              (CAR_TYPE_VALUES.includes(normalizeCarType(floorMapping.carType))
-                ? normalizeCarType(floorMapping.carType)
-                : null),
             Status: 'Assigned',
             UpdatedAt: rowUpdatedAt
           },
@@ -903,6 +901,30 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
           },
           t
         );
+
+        try {
+          await liftLiveAnalysisService.onParkCompleted({
+            projectId: operator.ProjectId,
+            parkingSystemId: operator.ParkingSystemId,
+            liftFloor: liftLiveAnalysisService.resolveLiftFloorFromPallet(pallet),
+            transaction: t
+          });
+        } catch (liftErr) {
+          console.error('[PARKING_SYNC] LiftLiveAnalysis park complete failed:', liftErr.message || liftErr);
+        }
+
+        if (parkingRequestId) {
+          try {
+            await requestOrderService.removeRequestAndCompact({
+              parkingSystemId: operator.ParkingSystemId,
+              requestType: 'Parking',
+              requestId: parkingRequestId,
+              transaction: t
+            });
+          } catch (orderErr) {
+            console.error('[PARKING_SYNC] RequestOrders park remove failed:', orderErr.message || orderErr);
+          }
+        }
 
         await t.commit();
         await emitCarParkedIfNeeded({
@@ -989,20 +1011,26 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
             );
           }
           if (!otherAssigned) {
+            // Do not touch CarType — slot type is owned by PLC bulk sync only.
             await targetPallet.update(
               {
                 UserId: customer.UserId,
                 CarId: car.Id,
-                CarType:
-                  car.CarType ||
-                  (CAR_TYPE_VALUES.includes(normalizeCarType(floorMapping.carType))
-                    ? normalizeCarType(floorMapping.carType)
-                    : null),
                 Status: 'Assigned',
                 UpdatedAt: rowUpdatedAt
               },
               { transaction: t }
             );
+            try {
+              await liftLiveAnalysisService.onParkCompleted({
+                projectId: operator.ProjectId,
+                parkingSystemId: operator.ParkingSystemId,
+                liftFloor: liftLiveAnalysisService.resolveLiftFloorFromPallet(targetPallet),
+                transaction: t
+              });
+            } catch (liftErr) {
+              console.error('[PARKING_SYNC] LiftLiveAnalysis mid-park complete failed:', liftErr.message || liftErr);
+            }
           }
         }
         await writeLedger(
@@ -1067,11 +1095,11 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
         t
       );
 
+      // Keep CarType — physical pallet type from PLC sync only.
       await targetPallet.update(
         {
           UserId: 0,
           CarId: null,
-          CarType: null,
           Status: 'Released',
           UpdatedAt: retrieveAt
         },
@@ -1091,6 +1119,29 @@ const processParkingSync = async (operatorUserId, carAllotHistory = []) => {
         },
         t
       );
+
+      try {
+        await liftLiveAnalysisService.onReleaseCompleted({
+          projectId: operator.ProjectId,
+          parkingSystemId: operator.ParkingSystemId,
+          transaction: t
+        });
+      } catch (liftErr) {
+        console.error('[PARKING_SYNC] LiftLiveAnalysis release complete failed:', liftErr.message || liftErr);
+      }
+
+      if (releaseResult?.requestId) {
+        try {
+          await requestOrderService.removeRequestAndCompact({
+            parkingSystemId: operator.ParkingSystemId,
+            requestType: 'Release',
+            requestId: releaseResult.requestId,
+            transaction: t
+          });
+        } catch (orderErr) {
+          console.error('[PARKING_SYNC] RequestOrders release remove failed:', orderErr.message || orderErr);
+        }
+      }
 
       await t.commit();
 

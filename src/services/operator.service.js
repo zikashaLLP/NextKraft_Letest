@@ -4,9 +4,11 @@ const { sequelize } = require('../config/database');
 const { PARKING_SYSTEM_STATUS_VALUES } = require('../constants/parkingSystemStatus');
 const notificationService = require('./notification.service');
 const parkingSyncService = require('./parkingSync.service');
+const liftLiveAnalysisService = require('./liftLiveAnalysis.service');
+const requestOrderService = require('./requestOrder.service');
+const { calculateTowerReleaseEstimatedTime } = require('../utils/towerTiming');
 const { User, Operator, Project, ParkingSystem, PalletAllotment, Customer, Car, Request, RequestQueue, ParkingRequest } = require('../models/associations');
 const websocketService = require('./websocket.service');
-const { calculateTowerReleaseEstimatedTime } = require('../utils/towerTiming');
 const { formatEstimatedTimeInMinutes } = require('../utils/timeFormat');
 
 const normalizeOptionalSyncUuid = (value) => {
@@ -626,7 +628,7 @@ const carIn = async (operatorUserId, floor, floorColumn, parkingRequestId = null
     });
 
     if (!existingParkingRequest) {
-      // Create new parking request
+      // Create new parking request — operator manual → head of RequestOrders
       const istTime = getISTTime();
       parkingRequest = await ParkingRequest.create({
         UserId: car.UserId,
@@ -634,9 +636,22 @@ const carIn = async (operatorUserId, floor, floorColumn, parkingRequestId = null
         ParkingSystemId: operator.ParkingSystemId,
         CarId: car.Id,
         Status: 'Pending',
+        EstimatedTime: 0,
+        EstimatedTimeAt: istTime,
         CreatedAt: istTime,
         UpdatedAt: istTime
       });
+      try {
+        await requestOrderService.enqueueRequest({
+          projectId: operator.ProjectId,
+          parkingSystemId: operator.ParkingSystemId,
+          requestType: 'Parking',
+          requestId: parkingRequest.Id,
+          position: 'head'
+        });
+      } catch (orderErr) {
+        console.error('[CAR_IN] RequestOrders enqueue failed:', orderErr.message || orderErr);
+      }
     } else {
       parkingRequest = existingParkingRequest;
       
@@ -758,9 +773,6 @@ const carIn = async (operatorUserId, floor, floorColumn, parkingRequestId = null
     }
   };
 
-  // Format the time to parking
-  const timeToParkingFormatted = formatTime(timeToParking);
-
   // Step 14: Check if car is already assigned to another pallet
   const existingPalletAssignment = await PalletAllotment.findOne({
     where: {
@@ -780,6 +792,41 @@ const carIn = async (operatorUserId, floor, floorColumn, parkingRequestId = null
     Status: 'Accepted',
     UpdatedAt: istTime
   });
+
+  // Parking accept: no AfterAcceptTimer. If already order 1 → no ETA reshuffle.
+  // If middle order accepted → promote to 1 and shift previous 1..n down + reestimate.
+  try {
+    await requestOrderService.enqueueRequest({
+      projectId: operator.ProjectId,
+      parkingSystemId: operator.ParkingSystemId,
+      requestType: 'Parking',
+      requestId: parkingRequest.Id,
+      position: 'tail'
+    });
+    await requestOrderService.promoteAcceptedToHead({
+      parkingSystemId: operator.ParkingSystemId,
+      requestType: 'Parking',
+      requestId: parkingRequest.Id
+    });
+  } catch (orderErr) {
+    console.error('[CAR_IN] RequestOrders accept hook failed:', orderErr.message || orderErr);
+  }
+
+  const timeToParkingFormatted = formatTime(timeToParking);
+
+  const targetType =
+    liftLiveAnalysisService.normalizeLiftPalletType(pallet.CarType) ||
+    liftLiveAnalysisService.normalizeLiftPalletType(car?.CarType);
+  try {
+    await liftLiveAnalysisService.onParkAccepted({
+      projectId: operator.ProjectId,
+      parkingSystemId: operator.ParkingSystemId,
+      targetPalletId: palletId,
+      targetType
+    });
+  } catch (liftErr) {
+    console.error('[CAR_IN] LiftLiveAnalysis update failed:', liftErr.message || liftErr);
+  }
 
   const carInfo = car
     ? [car.CarCompany, car.CarModel, car.CarNumber].filter(Boolean).join(' ') || 'your car'
@@ -817,11 +864,13 @@ const carIn = async (operatorUserId, floor, floorColumn, parkingRequestId = null
 };
 
 // Assign pallet (UserId, CarId, Assigned; CarType not set on pallet), complete parking request, notify pallet_assigned.
-const parkCar = async (operatorUserId, parkingRequestId, palletId, syncUuid = null) => {
+const parkCar = async (operatorUserId, parkingRequestId, palletId, syncUuid = null, tt = null) => {
   const operator = await Operator.findOne({
     where: { UserId: operatorUserId }
   });
   const liveSyncUuid = normalizeOptionalSyncUuid(syncUuid);
+  const slotTt =
+    tt != null && tt !== '' && !Number.isNaN(Number(tt)) ? Math.trunc(Number(tt)) : null;
 
   if (!operator) {
     throw new Error('Operator profile not found');
@@ -924,17 +973,43 @@ const parkCar = async (operatorUserId, parkingRequestId, palletId, syncUuid = nu
 
   const istTime = getISTTime();
 
-  await pallet.update({
+  // Do not touch CarType — slot type is owned by PLC bulk sync only.
+  // TT: refresh from Omron/operator when provided (live slot TT after park).
+  const parkPalletUpdate = {
     UserId: parkingRequest.UserId,
     CarId: car.Id,
     Status: 'Assigned',
     UpdatedAt: istTime
-  });
+  };
+  if (slotTt != null) {
+    parkPalletUpdate.TT = slotTt;
+  }
+  await pallet.update(parkPalletUpdate);
 
   await parkingRequest.update({
     Status: 'Completed',
     UpdatedAt: istTime
   });
+
+  try {
+    await requestOrderService.removeRequestAndCompact({
+      parkingSystemId: operator.ParkingSystemId,
+      requestType: 'Parking',
+      requestId: parkingRequest.Id
+    });
+  } catch (orderErr) {
+    console.error('[PARK_CAR] RequestOrders remove failed:', orderErr.message || orderErr);
+  }
+
+  try {
+    await liftLiveAnalysisService.onParkCompleted({
+      projectId: operator.ProjectId,
+      parkingSystemId: operator.ParkingSystemId,
+      liftFloor: liftLiveAnalysisService.resolveLiftFloorFromPallet(pallet)
+    });
+  } catch (liftErr) {
+    console.error('[PARK_CAR] LiftLiveAnalysis update failed:', liftErr.message || liftErr);
+  }
 
   const updatedPallet = await PalletAllotment.findByPk(pallet.Id, {
     include: [
@@ -1076,6 +1151,12 @@ const getOperatorRequests = async (operatorUserId) => {
     ]
   });
 
+  const orderMap = await requestOrderService.mapOrderNumbersByRequests(
+    operator.ParkingSystemId,
+    'Release',
+    requests.map((r) => r.Id)
+  );
+
   return requests.map(request => ({
     id: request.Id,
     userId: request.UserId,
@@ -1138,8 +1219,12 @@ const getOperatorRequests = async (operatorUserId) => {
       carNumber: request.car.CarNumber
     } : null,
     status: request.Status,
+    orderNumber: orderMap.get(request.Id) ?? null,
     estimatedTime: request.EstimatedTime,
+    estimatedTimeAt: request.EstimatedTimeAt ?? null,
     estimatedTimeFormatted: formatEstimatedTimeInMinutes(request.EstimatedTime),
+    afterAcceptTimer: request.AfterAcceptTimer ?? 0,
+    acceptedAt: request.AcceptedAt ?? null,
     createdAt: request.CreatedAt,
     updatedAt: request.UpdatedAt
   }));
@@ -1251,14 +1336,16 @@ const updateRequestStatus = async (actorUserId, requestId, newStatus, actorRole 
 
   // Step 5: If status is "Completed", release pallet, move to RequestQueue, then remove request
   if (newStatus === 'Completed') {
+    const completedRequestId = request.Id;
+    const completedParkingSystemId = request.ParkingSystemId;
+
     if (request.palletAllotment) {
       const pallet = request.palletAllotment;
 
-      // Release the pallet: set UserId to 0, CarId to null, Status to 'Released'
+      // Release the pallet: set UserId to 0, CarId to null, Status to 'Released' (keep CarType — PLC slot type)
       await pallet.update({
         UserId: 0,
         CarId: null,
-        CarType: null,
         Status: 'Released',
         UpdatedAt: istTime
       });
@@ -1280,10 +1367,47 @@ const updateRequestStatus = async (actorUserId, requestId, newStatus, actorRole 
     // Delete original request
     await request.destroy();
 
+    try {
+      await requestOrderService.removeRequestAndCompact({
+        parkingSystemId: completedParkingSystemId,
+        requestType: 'Release',
+        requestId: completedRequestId
+      });
+    } catch (orderErr) {
+      console.error('[UPDATE_REQUEST_STATUS] RequestOrders remove failed:', orderErr.message || orderErr);
+    }
+
     return {
       request: null,
       message: 'Request completed, logged to history, and removed from active requests. Pallet has been released.'
     };
+  }
+
+  if (newStatus === 'Cancelled') {
+    try {
+      await requestOrderService.removeRequestAndCompact({
+        parkingSystemId: request.ParkingSystemId,
+        requestType: 'Release',
+        requestId: request.Id
+      });
+    } catch (orderErr) {
+      console.error('[UPDATE_REQUEST_STATUS] RequestOrders cancel remove failed:', orderErr.message || orderErr);
+    }
+  }
+
+  if (newStatus === 'Accepted') {
+    try {
+      const acceptSeconds = Number(request.EstimatedTime) || 0;
+      await requestOrderService.applyAcceptTimers({
+        parkingSystemId: request.ParkingSystemId,
+        requestType: 'Release',
+        requestId: request.Id,
+        afterAcceptTimerSeconds: acceptSeconds
+      });
+      await request.reload();
+    } catch (orderErr) {
+      console.error('[UPDATE_REQUEST_STATUS] RequestOrders accept hook failed:', orderErr.message || orderErr);
+    }
   }
 
   // Step 6: Reload request with all associations for non-completed statuses
@@ -1945,6 +2069,11 @@ const callSpecificPallet = async (
         model: User,
         as: 'user',
         attributes: ['Id', 'Username', 'Role']
+      },
+      {
+        model: Car,
+        as: 'car',
+        attributes: ['Id', 'CarType', 'CarModel', 'CarCompany', 'CarNumber']
       }
     ]
   });
@@ -2019,18 +2148,52 @@ const callSpecificPallet = async (
     throw new Error('Invalid parking system type');
   }
 
-  // Step 9: Update request status to 'Accepted' and refresh estimated time
-  // UpdatedAt at this moment is the accept timestamp used by the customer countdown.
+  // Step 9: Update request status to 'Accepted' and set AfterAcceptTimer / AcceptedAt
   const istTime = getISTTime();
   await request.update({
     Status: 'Accepted',
     EstimatedTime: timeToCall,
+    AfterAcceptTimer: timeToCall,
+    AcceptedAt: istTime,
     UpdatedAt: istTime
   });
+
+  try {
+    await requestOrderService.enqueueRequest({
+      projectId: operator.ProjectId,
+      parkingSystemId: operator.ParkingSystemId,
+      requestType: 'Release',
+      requestId: request.Id,
+      position: 'tail'
+    });
+    await requestOrderService.applyAcceptTimers({
+      parkingSystemId: operator.ParkingSystemId,
+      requestType: 'Release',
+      requestId: request.Id,
+      afterAcceptTimerSeconds: timeToCall
+    });
+  } catch (orderErr) {
+    console.error('[CALL-SPECIFIC-PALLET] RequestOrders accept hook failed:', orderErr.message || orderErr);
+  }
+
+  const releaseTargetType =
+    liftLiveAnalysisService.normalizeLiftPalletType(pallet.CarType) ||
+    liftLiveAnalysisService.normalizeLiftPalletType(request.car?.CarType);
+  try {
+    await liftLiveAnalysisService.onReleaseAccepted({
+      projectId: operator.ProjectId,
+      parkingSystemId: operator.ParkingSystemId,
+      requestedPalletId: pallet.Id,
+      requestedType: releaseTargetType
+    });
+  } catch (liftErr) {
+    console.error('[CALL-SPECIFIC-PALLET] LiftLiveAnalysis update failed:', liftErr.message || liftErr);
+  }
 
   // Step 10: Format time in minutes only for customer release ETA
   const timeToCallFormatted = formatEstimatedTimeInMinutes(timeToCall);
   const updatedAtIso = new Date(istTime).toISOString();
+  const acceptedAtIso = updatedAtIso;
 
   // Step 12: Send notification to customer with estimated time
   if (request.user) {
@@ -2054,6 +2217,8 @@ const callSpecificPallet = async (
     status: request.Status,
     estimatedTime: timeToCall,
     estimatedTimeFormatted: timeToCallFormatted,
+    afterAcceptTimer: timeToCall,
+    acceptedAt: acceptedAtIso,
     updatedAt: updatedAtIso
   });
 
@@ -2068,6 +2233,8 @@ const callSpecificPallet = async (
     request: {
       id: request.Id,
       status: request.Status,
+      afterAcceptTimer: timeToCall,
+      acceptedAt: istTime,
       updatedAt: request.UpdatedAt
     },
     parkingSystem: {
@@ -2151,8 +2318,10 @@ const updateParkingSystemStatus = async (operatorUserId, status) => {
 };
 
 // Release Parked Car Service — keyed by release Request id (same completion flow as before)
-const releaseParkedCar = async (operatorUserId, requestId, syncUuid = null) => {
+const releaseParkedCar = async (operatorUserId, requestId, syncUuid = null, tt = null) => {
   const liveSyncUuid = normalizeOptionalSyncUuid(syncUuid);
+  const slotTt =
+    tt != null && tt !== '' && !Number.isNaN(Number(tt)) ? Math.trunc(Number(tt)) : null;
 
   // Step 1: Find operator by userId
   const operator = await Operator.findOne({
@@ -2285,14 +2454,37 @@ const releaseParkedCar = async (operatorUserId, requestId, syncUuid = null) => {
     UpdatedAt: istTime
   });
 
-  // Step 11: Release the pallet: set UserId to 0, CarId to null, Status to 'Released'
-  await pallet.update({
+  // Step 11: Release the pallet: set UserId to 0, CarId to null, Status to 'Released' (keep CarType — PLC slot type)
+  // TT: refresh from Omron/operator when provided (live slot TT after release).
+  const releasePalletUpdate = {
     UserId: 0,
     CarId: null,
-    CarType: null,
     Status: 'Released',
     UpdatedAt: istTime
-  });
+  };
+  if (slotTt != null) {
+    releasePalletUpdate.TT = slotTt;
+  }
+  await pallet.update(releasePalletUpdate);
+
+  try {
+    await requestOrderService.removeRequestAndCompact({
+      parkingSystemId: operator.ParkingSystemId,
+      requestType: 'Release',
+      requestId: resolvedRequestId
+    });
+  } catch (orderErr) {
+    console.error('[RELEASE_PARKED_CAR] RequestOrders remove failed:', orderErr.message || orderErr);
+  }
+
+  try {
+    await liftLiveAnalysisService.onReleaseCompleted({
+      projectId: operator.ProjectId,
+      parkingSystemId: operator.ParkingSystemId
+    });
+  } catch (liftErr) {
+    console.error('[RELEASE_PARKED_CAR] LiftLiveAnalysis update failed:', liftErr.message || liftErr);
+  }
 
   // Step 12: Insert into RequestQueue as history
   await RequestQueue.create({
@@ -2550,7 +2742,7 @@ const callPalletAndCreateRequest = async (operatorUserId, palletId) => {
     throw new Error('Invalid parking system type');
   }
 
-  // Step 10: Create new release request
+  // Step 10: Create new release request (operator manual → head of queue)
   const istTime = getISTTime();
   const request = await Request.create({
     UserId: pallet.UserId,
@@ -2561,16 +2753,42 @@ const callPalletAndCreateRequest = async (operatorUserId, palletId) => {
     OperatorId: operator.Id,
     Status: 'Pending',
     EstimatedTime: timeToCall,
+    EstimatedTimeAt: istTime,
     CreatedAt: istTime,
     UpdatedAt: istTime
   });
 
-  // Step 11: Update request status to 'Accepted' (UpdatedAt = accept timestamp for countdown)
+  try {
+    await requestOrderService.enqueueRequest({
+      projectId: operator.ProjectId,
+      parkingSystemId: operator.ParkingSystemId,
+      requestType: 'Release',
+      requestId: request.Id,
+      position: 'head'
+    });
+  } catch (orderErr) {
+    console.error('[CALL_PALLET_CREATE] RequestOrders enqueue failed:', orderErr.message || orderErr);
+  }
+
+  // Step 11: Accept + AfterAcceptTimer
   await request.update({
     Status: 'Accepted',
     EstimatedTime: timeToCall,
+    AfterAcceptTimer: timeToCall,
+    AcceptedAt: istTime,
     UpdatedAt: istTime
   });
+
+  try {
+    await requestOrderService.applyAcceptTimers({
+      parkingSystemId: operator.ParkingSystemId,
+      requestType: 'Release',
+      requestId: request.Id,
+      afterAcceptTimerSeconds: timeToCall
+    });
+  } catch (orderErr) {
+    console.error('[CALL_PALLET_CREATE] RequestOrders accept hook failed:', orderErr.message || orderErr);
+  }
 
   // Step 12: Format time in minutes only for customer release ETA
   const timeToCallFormatted = formatEstimatedTimeInMinutes(timeToCall);
@@ -2803,7 +3021,7 @@ const callPalletByCarNumber = async (
     throw new Error('Invalid parking system type');
   }
 
-  // Step 9: Create new release request
+  // Step 9: Create new release request (operator manual by car number → head)
   const istTime = getISTTime();
   const request = await Request.create({
     UserId: car.UserId,
@@ -2814,9 +3032,30 @@ const callPalletByCarNumber = async (
     OperatorId: operator.Id,
     Status: 'Accepted',
     EstimatedTime: timeToCall,
+    EstimatedTimeAt: istTime,
+    AfterAcceptTimer: timeToCall,
+    AcceptedAt: istTime,
     CreatedAt: istTime,
     UpdatedAt: istTime
   });
+
+  try {
+    await requestOrderService.enqueueRequest({
+      projectId: operator.ProjectId,
+      parkingSystemId: operator.ParkingSystemId,
+      requestType: 'Release',
+      requestId: request.Id,
+      position: 'head'
+    });
+    await requestOrderService.applyAcceptTimers({
+      parkingSystemId: operator.ParkingSystemId,
+      requestType: 'Release',
+      requestId: request.Id,
+      afterAcceptTimerSeconds: timeToCall
+    });
+  } catch (orderErr) {
+    console.error('[CALL_PALLET_BY_CAR] RequestOrders hook failed:', orderErr.message || orderErr);
+  }
 
   // Step 10: Format time in minutes only for customer release ETA
   const timeToCallFormatted = formatEstimatedTimeInMinutes(timeToCall);
@@ -3049,6 +3288,25 @@ const carOut = async (
   return { requestId: created.request.id, alreadyAccepted: false };
 };
 
+const getLiftLiveAnalysis = async (operatorUserId) => {
+  const operator = await Operator.findOne({
+    where: { UserId: operatorUserId }
+  });
+
+  if (!operator) {
+    throw new Error('Operator profile not found');
+  }
+
+  if (!operator.ProjectId || !operator.ParkingSystemId) {
+    throw new Error('Operator is not assigned to a project and parking system');
+  }
+
+  return liftLiveAnalysisService.getLiftLiveAnalysisForOperator(
+    operator.ProjectId,
+    operator.ParkingSystemId
+  );
+};
+
 module.exports = {
   createOperator,
   getOperatorProfile,
@@ -3067,7 +3325,8 @@ module.exports = {
   callSpecificPallet,
   callPalletAndCreateRequest,
   callPalletByCarNumber,
-  carOut
+  carOut,
+  getLiftLiveAnalysis
 };
 
 

@@ -224,6 +224,8 @@ const getPalletDetails = async (projectId, parkingSystemId) => {
       column: pallet.Column,
       userGivenPalletNumber: pallet.UserGivenPalletNumber,
       carId: pallet.CarId,
+      carType: pallet.CarType ?? null,
+      tt: pallet.TT ?? null,
       car: pallet.car ? {
         id: pallet.car.Id,
         carType: pallet.car.CarType,
@@ -524,6 +526,8 @@ const getProjectDetailsWithParkingSystemAndPallets = async (projectId) => {
       column: pallet.Column,
       userGivenPalletNumber: pallet.UserGivenPalletNumber,
       carId: pallet.CarId,
+      carType: pallet.CarType ?? null,
+      tt: pallet.TT ?? null,
       car: pallet.car ? {
         id: pallet.car.Id,
         carType: pallet.car.CarType,
@@ -594,20 +598,43 @@ const getParkingSystemStatus = async (userId, userRole) => {
 };
 
 /**
- * Bulk-set UserGivenPalletNumber by matching ParkingSystemId + floor + floorColumn to PalletDetails.
+ * Bulk-set UserGivenPalletNumber (+ optional CarType, TT) by matching ParkingSystemId + floor + floorColumn.
  * Floor matches above-ground Level (LevelBelowGround null) or below-ground LevelBelowGround (Level null), same as car-in.
  * Operators may only touch rows where parkingSystemId equals their assigned ParkingSystemId.
+ * TT comes from Omron FloorMapping DregisterTTValue (e.g. 10 or 11).
  */
 const bulkUpdateUserGivenPalletNumbers = async (items, { userRole, operatorUserId } = {}) => {
   if (!Array.isArray(items) || items.length === 0) {
     throw new Error('Request body must be a non-empty array');
   }
 
+  const normalizeBulkCarType = (value) => {
+    if (value === undefined || value === null || value === '') return undefined;
+    if (typeof value === 'number') {
+      if (value === 1) return 'Sedan';
+      if (value === 2) return 'SUV';
+      return null;
+    }
+    const raw = String(value).trim().toLowerCase();
+    if (raw === 'sedan' || raw === '1') return 'Sedan';
+    if (raw === 'suv' || raw === '2') return 'SUV';
+    return null;
+  };
+
+  const normalizeBulkTt = (value) => {
+    if (value === undefined || value === null || value === '') return undefined;
+    const n = Number(value);
+    if (!Number.isFinite(n)) return null;
+    return Math.trunc(n);
+  };
+
   const normalized = items.map((raw, index) => {
     const pidRaw = raw.parkingSystemId ?? raw.parkingsystemId ?? raw.ParkingSystemId;
     const floorRaw = raw.floor ?? raw.Floor;
     const colRaw = raw.floorColumn ?? raw.FloorColumn;
     const pnRaw = raw.PalletNumber ?? raw.palletNumber;
+    const carTypeRaw = raw.CarType ?? raw.carType;
+    const ttRaw = raw.TT ?? raw.tt ?? raw.DregisterTTValue ?? raw.dregisterTTValue;
 
     const parkingSystemId =
       pidRaw === undefined || pidRaw === null || pidRaw === ''
@@ -623,8 +650,10 @@ const bulkUpdateUserGivenPalletNumbers = async (items, { userRole, operatorUserI
         : parseInt(String(colRaw).trim(), 10);
     const palletNumber =
       pnRaw === undefined || pnRaw === null ? '' : String(pnRaw).trim();
+    const carType = normalizeBulkCarType(carTypeRaw);
+    const tt = normalizeBulkTt(ttRaw);
 
-    return { index, parkingSystemId, floor, floorColumn, palletNumber };
+    return { index, parkingSystemId, floor, floorColumn, palletNumber, carType, tt };
   });
 
   for (const row of normalized) {
@@ -639,6 +668,16 @@ const bulkUpdateUserGivenPalletNumbers = async (items, { userRole, operatorUserI
     ) {
       throw new Error(
         `Invalid entry at index ${row.index}: parkingSystemId, floor, floorColumn, and PalletNumber are required (positive ids; pallet label non-empty)`
+      );
+    }
+    if (row.carType === null) {
+      throw new Error(
+        `Invalid entry at index ${row.index}: CarType must be Sedan or SUV when provided`
+      );
+    }
+    if (row.tt === null) {
+      throw new Error(
+        `Invalid entry at index ${row.index}: TT must be a number when provided`
       );
     }
   }
@@ -725,17 +764,27 @@ const bulkUpdateUserGivenPalletNumbers = async (items, { userRole, operatorUserI
       continue;
     }
 
-    await pallet.update({
+    const updatePayload = {
       UserGivenPalletNumber: row.palletNumber,
       UpdatedAt: istTime
-    });
+    };
+    if (row.carType !== undefined) {
+      updatePayload.CarType = row.carType;
+    }
+    if (row.tt !== undefined) {
+      updatePayload.TT = row.tt;
+    }
+
+    await pallet.update(updatePayload);
 
     updated.push({
       palletId: pallet.Id,
       parkingSystemId: row.parkingSystemId,
       floor: row.floor,
       floorColumn: row.floorColumn,
-      userGivenPalletNumber: row.palletNumber
+      userGivenPalletNumber: row.palletNumber,
+      ...(row.carType !== undefined ? { carType: row.carType } : {}),
+      ...(row.tt !== undefined ? { tt: row.tt } : {})
     });
   }
 

@@ -14,6 +14,8 @@ const CarAllotSyncLedger = require('./CarAllotSyncLedger');
 const Notification = require('./Notification');
 const PasswordResetOtp = require('./PasswordResetOtp');
 const AppConfig = require('./AppConfig');
+const LiftLiveAnalysis = require('./LiftLiveAnalysis');
+const RequestOrders = require('./RequestOrders');
 
 // User associations
 User.hasMany(Customer, { foreignKey: 'UserId', as: 'customers' });
@@ -36,6 +38,8 @@ Project.hasMany(PalletAllotment, { foreignKey: 'ProjectId', as: 'palletAllotment
 Project.hasMany(Request, { foreignKey: 'ProjectId', as: 'requests' });
 Project.hasMany(RequestQueue, { foreignKey: 'ProjectId', as: 'requestQueues' });
 Project.hasMany(ParkingRequest, { foreignKey: 'ProjectId', as: 'parkingRequests' });
+Project.hasMany(LiftLiveAnalysis, { foreignKey: 'ProjectId', as: 'liftLiveAnalyses' });
+Project.hasMany(RequestOrders, { foreignKey: 'ProjectId', as: 'requestOrders' });
 
 // Customer associations
 Customer.belongsTo(User, { foreignKey: 'UserId', as: 'user' });
@@ -58,6 +62,14 @@ ParkingSystem.hasMany(PalletAllotment, { foreignKey: 'ParkingSystemId', as: 'pal
 ParkingSystem.hasMany(Request, { foreignKey: 'ParkingSystemId', as: 'requests' });
 ParkingSystem.hasMany(RequestQueue, { foreignKey: 'ParkingSystemId', as: 'requestQueues' });
 ParkingSystem.hasMany(ParkingRequest, { foreignKey: 'ParkingSystemId', as: 'parkingRequests' });
+ParkingSystem.hasOne(LiftLiveAnalysis, { foreignKey: 'ParkingSystemId', as: 'liftLiveAnalysis' });
+LiftLiveAnalysis.belongsTo(ParkingSystem, { foreignKey: 'ParkingSystemId', as: 'parkingSystem' });
+LiftLiveAnalysis.belongsTo(Project, { foreignKey: 'ProjectId', as: 'project' });
+LiftLiveAnalysis.belongsTo(PalletAllotment, { foreignKey: 'PalletId', as: 'pallet' });
+LiftLiveAnalysis.belongsTo(PalletAllotment, { foreignKey: 'NextPalletId', as: 'nextPallet' });
+ParkingSystem.hasMany(RequestOrders, { foreignKey: 'ParkingSystemId', as: 'requestOrders' });
+RequestOrders.belongsTo(ParkingSystem, { foreignKey: 'ParkingSystemId', as: 'parkingSystem' });
+RequestOrders.belongsTo(Project, { foreignKey: 'ProjectId', as: 'project' });
 
 // Car associations
 Car.belongsTo(User, { foreignKey: 'UserId', as: 'user' });
@@ -110,6 +122,8 @@ module.exports = {
   CarAllotSyncLedger,
   Notification,
   PasswordResetOtp,
-  AppConfig
+  AppConfig,
+  LiftLiveAnalysis,
+  RequestOrders
 };
 

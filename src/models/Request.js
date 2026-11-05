@@ -55,6 +55,22 @@ const Request = sequelize.define('Request', {
     type: DataTypes.INTEGER,
     defaultValue: 0
   },
+  /** When EstimatedTime was anchored (queue / pre-accept). */
+  EstimatedTimeAt: {
+    type: DataTypes.DATE,
+    allowNull: true
+  },
+  /** Post-accept countdown duration (seconds); customer Accepted timer uses this. */
+  AfterAcceptTimer: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 0
+  },
+  /** Accept countdown anchor. */
+  AcceptedAt: {
+    type: DataTypes.DATE,
+    allowNull: true
+  },
   CreatedAt: {
     type: DataTypes.DATE,
     allowNull: false,

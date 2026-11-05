@@ -75,6 +75,10 @@ const validateParkCar = [
     .trim()
     .isLength({ min: 1, max: 64 })
     .withMessage('syncUuid must be 1-64 characters'),
+  body('tt')
+    .optional({ nullable: true })
+    .isInt()
+    .withMessage('tt must be an integer (Omron slot TT, e.g. 10 or 11)'),
 
   handleValidationErrors
 ];
@@ -140,6 +144,10 @@ const validateReleaseParkedCar = [
     .trim()
     .isLength({ min: 1, max: 64 })
     .withMessage('syncUuid must be 1-64 characters'),
+  body('tt')
+    .optional({ nullable: true })
+    .isInt()
+    .withMessage('tt must be an integer (Omron slot TT, e.g. 10 or 11)'),
 
   handleValidationErrors
 ];

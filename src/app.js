@@ -129,11 +129,28 @@ const startServer = async () => {
 
       // Ensure newer tables exist even when full SYNC_DB is off
       try {
-        const { PasswordResetOtp, AppConfig } = require('./models/associations');
+        const {
+          PasswordResetOtp,
+          AppConfig,
+          LiftLiveAnalysis,
+          RequestOrders,
+          ParkingRequest,
+          Request,
+          PalletAllotment
+        } = require('./models/associations');
         await PasswordResetOtp.sync();
         await AppConfig.sync();
+        await LiftLiveAnalysis.sync();
+        await RequestOrders.sync();
+        // Add new ETA / accept-timer / TT columns on existing DBs without full SYNC_DB
+        await ParkingRequest.sync({ alter: true });
+        await Request.sync({ alter: true });
+        await PalletAllotment.sync({ alter: true });
       } catch (otpSyncError) {
-        console.warn('⚠️  app config / OTP table sync skipped/failed:', otpSyncError.message);
+        console.warn(
+          '⚠️  app config / OTP / LiftLiveAnalysis / RequestOrders / PalletDetails table sync skipped/failed:',
+          otpSyncError.message
+        );
       }
     }
     

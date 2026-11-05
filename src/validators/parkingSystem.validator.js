@@ -87,7 +87,7 @@ const validateCreateParkingSystem = [
   handleValidationErrors
 ];
 
-/** Body: JSON array of { parkingSystemId, floor, floorColumn, PalletNumber } OR { items: [...] } */
+/** Body: JSON array of { parkingSystemId, floor, floorColumn, PalletNumber, CarType?, TT? } OR { items: [...] } */
 const validateBulkUpdatePalletNumbers = (req, res, next) => {
   const rows = Array.isArray(req.body) ? req.body : req.body?.items;
   if (!Array.isArray(rows) || rows.length === 0) {
@@ -96,6 +96,28 @@ const validateBulkUpdatePalletNumbers = (req, res, next) => {
       message:
         'Body must be a non-empty array of objects, or { "items": [ ... ] } with a non-empty items array'
     });
+  }
+  for (let i = 0; i < rows.length; i += 1) {
+    const raw = rows[i]?.CarType ?? rows[i]?.carType;
+    if (raw !== undefined && raw !== null && raw !== '') {
+      const t = String(raw).trim().toLowerCase();
+      if (t !== 'sedan' && t !== 'suv' && t !== '1' && t !== '2') {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid CarType at index ${i}: must be Sedan or SUV when provided`
+        });
+      }
+    }
+    const ttRaw = rows[i]?.TT ?? rows[i]?.tt ?? rows[i]?.DregisterTTValue;
+    if (ttRaw !== undefined && ttRaw !== null && ttRaw !== '') {
+      const n = Number(ttRaw);
+      if (!Number.isFinite(n)) {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid TT at index ${i}: must be a number when provided`
+        });
+      }
+    }
   }
   next();
 };

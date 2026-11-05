@@ -114,12 +114,17 @@ const carIn = async (req, res) => {
 
 const parkCar = async (req, res) => {
   try {
-    const { parkingRequestId, palletId, syncUuid } = req.body;
+    const { parkingRequestId, palletId, syncUuid, tt } = req.body;
+    const parsedTt =
+      tt != null && tt !== '' && !Number.isNaN(parseInt(tt, 10))
+        ? parseInt(tt, 10)
+        : null;
     const result = await operatorService.parkCar(
       req.user.id,
       parseInt(parkingRequestId, 10),
       parseInt(palletId, 10),
-      syncUuid
+      syncUuid,
+      parsedTt
     );
 
     return successResponse(res, result, 'Car parked successfully');
@@ -295,12 +300,17 @@ const updateParkingSystemStatus = async (req, res) => {
 const releaseParkedCar = async (req, res) => {
   try {
     const operatorUserId = req.user.id; // Get operator userId from authenticated session
-    const { requestId, syncUuid } = req.body;
+    const { requestId, syncUuid, tt } = req.body;
+    const parsedTt =
+      tt != null && tt !== '' && !Number.isNaN(parseInt(tt, 10))
+        ? parseInt(tt, 10)
+        : null;
 
     const result = await operatorService.releaseParkedCar(
       operatorUserId,
       parseInt(requestId, 10),
-      syncUuid
+      syncUuid,
+      parsedTt
     );
 
     return successResponse(res, result, 'Car released successfully');
@@ -476,6 +486,19 @@ const parkingSync = async (req, res) => {
   }
 };
 
+const getLiftLiveAnalysis = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const result = await operatorService.getLiftLiveAnalysis(userId);
+    return successResponse(res, result, 'Lift live analysis retrieved successfully');
+  } catch (error) {
+    console.error('Get lift live analysis error:', error);
+    const statusCode = error.message === 'Operator profile not found' ? 404 :
+      error.message === 'Operator is not assigned to a project and parking system' ? 400 : 500;
+    return errorResponse(res, error.message || 'Failed to retrieve lift live analysis', statusCode);
+  }
+};
+
 module.exports = {
   createOperator,
   getOperatorProfile,
@@ -495,6 +518,7 @@ module.exports = {
   callSpecificPallet,
   callPalletAndCreateRequest,
   callPalletByCarNumber,
-  parkingSync
+  parkingSync,
+  getLiftLiveAnalysis
 };
 
