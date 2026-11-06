@@ -288,17 +288,21 @@ const removeRequestAndCompact = async ({
     return null;
   }
   await row.destroy({ transaction });
-  // Compact order numbers only (2→1, 3→2, …). Do not reestimate ETAs.
+  // Compact order numbers (2→1, 3→2, …), then refresh ETAs for the new queue.
+  // Without reestimate, waiters keep a stale EstimatedTimeAt from the prior head
+  // (e.g. 7 min clock keeps ticking → shows ~3 after the accepted job finishes).
   await compactOrderNumbers(parkingSystemId, transaction);
+  await reestimateQueue(parkingSystemId, { fromOrderNumber: 1, transaction });
   return true;
 };
 
 /**
- * On Accept: if this request is already Order 1 → no reorder / no ETA reshuffle.
+ * On Accept: if this request is already Order 1 → no reorder, but still reestimate
+ * from Order 2 (Accept timer on #1 changed; waiters need a fresh total + EstimatedTimeAt).
  * If Accept is a middle/later order (e.g. 3) → promote it to Order 1 and shift former
  * 1..N-1 down (1→2, 2→3, …), then reestimate from Order 2 onward.
  *
- * Completion path separately compacts (remove → 2 becomes 1, 3 becomes 2, …).
+ * Completion path: remove → compact → full reestimate (see removeRequestAndCompact).
  */
 const promoteAcceptedToHead = async ({
   parkingSystemId,
@@ -312,6 +316,9 @@ const promoteAcceptedToHead = async ({
   }
 
   if (row.OrderNumber === 1) {
+    // Already head (common after complete compact). Still refresh everyone behind
+    // so pending ETAs are based on this Accept, not a stale prior clock.
+    await reestimateQueue(parkingSystemId, { fromOrderNumber: 2, transaction });
     return { wasAlreadyFirst: true, promoted: false };
   }
 
