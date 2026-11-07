@@ -163,6 +163,21 @@ const reestimateQueue = async (
       transaction
     });
 
+    // Accepted release: AfterAcceptTimer is the real head segment. Do not replace it with a
+    // fresh path guess (that caused ~4 min on the accepted job while waiters looked higher).
+    const acceptTimer =
+      ctx.requestType === 'Release' &&
+      ctx.request.Status === 'Accepted' &&
+      ctx.request.AfterAcceptTimer != null &&
+      Number(ctx.request.AfterAcceptTimer) > 0
+        ? Math.round(Number(ctx.request.AfterAcceptTimer))
+        : null;
+    if (acceptTimer != null) {
+      const prevTotal = Number(state.totalEstimatedSeconds || 0);
+      result.segmentSeconds = acceptTimer;
+      result.totalEstimatedSeconds = Math.round(prevTotal + acceptTimer);
+    }
+
     // Parking that claims a new empty slot (not the pallet already on the lift)
     if (
       ctx.requestType === 'Parking' &&
@@ -261,16 +276,19 @@ const enqueueRequest = async ({
 const compactOrderNumbers = async (parkingSystemId, transaction = null) => {
   const orders = await getQueue(parkingSystemId, transaction);
   const at = getISTTime();
-  // Two-pass to avoid unique constraint clashes
+  // Two-pass to avoid unique constraint clashes.
+  // IMPORTANT: keep the original ASC queue order for the final 1..N write.
+  // Re-fetching with ORDER BY OrderNumber ASC after assigning -1,-2,-3 reverses
+  // the queue (-3,-2,-1 → old last becomes new Order 1) and makes later waiters
+  // show a short ~head ETA (e.g. ~4 min) after complete → middle-accept.
   for (let i = 0; i < orders.length; i += 1) {
     await orders[i].update(
       { OrderNumber: -(i + 1), UpdatedAt: at },
       { transaction }
     );
   }
-  const refreshed = await getQueue(parkingSystemId, transaction);
-  for (let i = 0; i < refreshed.length; i += 1) {
-    await refreshed[i].update(
+  for (let i = 0; i < orders.length; i += 1) {
+    await orders[i].update(
       { OrderNumber: i + 1, UpdatedAt: at },
       { transaction }
     );
@@ -300,7 +318,8 @@ const removeRequestAndCompact = async ({
  * On Accept: if this request is already Order 1 → no reorder, but still reestimate
  * from Order 2 (Accept timer on #1 changed; waiters need a fresh total + EstimatedTimeAt).
  * If Accept is a middle/later order (e.g. 3) → promote it to Order 1 and shift former
- * 1..N-1 down (1→2, 2→3, …), then reestimate from Order 2 onward.
+ * 1..N-1 down (1→2, 2→3, …), then recalculate ETAs for the FULL queue from Order 1
+ * so every position reflects the new order.
  *
  * Completion path: remove → compact → full reestimate (see removeRequestAndCompact).
  */
@@ -340,8 +359,8 @@ const promoteAcceptedToHead = async ({
 
   await row.update({ OrderNumber: 1, UpdatedAt: at }, { transaction });
 
-  // Accepted is now #1; refresh ETAs for everyone that moved behind it
-  await reestimateQueue(parkingSystemId, { fromOrderNumber: 2, transaction });
+  // Out-of-order accept (e.g. 3→1, old 1→2, old 2→3): recalculate ALL ETAs
+  await reestimateQueue(parkingSystemId, { fromOrderNumber: 1, transaction });
 
   return { wasAlreadyFirst: false, promoted: true, previousOrder: oldOrder };
 };

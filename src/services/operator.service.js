@@ -6,6 +6,7 @@ const notificationService = require('./notification.service');
 const parkingSyncService = require('./parkingSync.service');
 const liftLiveAnalysisService = require('./liftLiveAnalysis.service');
 const requestOrderService = require('./requestOrder.service');
+const requestEtaService = require('./requestEta.service');
 const { calculateTowerReleaseEstimatedTime } = require('../utils/towerTiming');
 const { User, Operator, Project, ParkingSystem, PalletAllotment, Customer, Car, Request, RequestQueue, ParkingRequest } = require('../models/associations');
 const websocketService = require('./websocket.service');
@@ -1407,13 +1408,65 @@ const updateRequestStatus = async (actorUserId, requestId, newStatus, actorRole 
 
   if (newStatus === 'Accepted') {
     try {
-      const acceptSeconds = Number(request.EstimatedTime) || 0;
+      // Accept timer must be THIS job's live/path segment from current lift state —
+      // never the old queue-cumulative EstimatedTime (that made middle-accept ETAs wrong).
+      let acceptSeconds = 0;
+      const parkingSystem = await ParkingSystem.findByPk(request.ParkingSystemId);
+      let pallet = request.palletAllotment;
+      if (!pallet && request.PalletAllotmentId) {
+        pallet = await PalletAllotment.findByPk(request.PalletAllotmentId);
+      }
+      let carType = pallet?.CarType || null;
+      if (request.CarId) {
+        const car = await Car.findByPk(request.CarId, { attributes: ['Id', 'CarType'] });
+        carType = carType || car?.CarType || null;
+      }
+      if (parkingSystem && pallet) {
+        const targetFloor = requestEtaService.resolvePalletFloor(pallet);
+        const previousState = await requestEtaService.seedStateFromLiftLive(
+          request.ProjectId,
+          request.ParkingSystemId
+        );
+        const eta = await requestEtaService.calculateRequestEstimatedTime({
+          parkingSystem,
+          projectId: request.ProjectId,
+          parkingSystemId: request.ParkingSystemId,
+          requestType: 'Release',
+          targetFloor,
+          carType,
+          palletId: pallet.Id,
+          palletHomeFloor: targetFloor,
+          previousState
+        });
+        acceptSeconds = Number(eta.segmentSeconds) || 0;
+      }
+
       await requestOrderService.applyAcceptTimers({
         parkingSystemId: request.ParkingSystemId,
         requestType: 'Release',
         requestId: request.Id,
         afterAcceptTimerSeconds: acceptSeconds
       });
+
+      const releaseTargetType =
+        liftLiveAnalysisService.normalizeLiftPalletType(pallet?.CarType) ||
+        liftLiveAnalysisService.normalizeLiftPalletType(carType);
+      if (pallet?.Id) {
+        try {
+          await liftLiveAnalysisService.onReleaseAccepted({
+            projectId: request.ProjectId,
+            parkingSystemId: request.ParkingSystemId,
+            requestedPalletId: pallet.Id,
+            requestedType: releaseTargetType
+          });
+        } catch (liftErr) {
+          console.error(
+            '[UPDATE_REQUEST_STATUS] LiftLiveAnalysis accept update failed:',
+            liftErr.message || liftErr
+          );
+        }
+      }
+
       await request.reload();
     } catch (orderErr) {
       console.error('[UPDATE_REQUEST_STATUS] RequestOrders accept hook failed:', orderErr.message || orderErr);
